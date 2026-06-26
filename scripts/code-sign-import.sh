@@ -24,17 +24,16 @@ security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
 security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 security import "$CERTIFICATE_PATH" -P "$P12_PASSWORD" -A -f pkcs12 -k "$KEYCHAIN_PATH" >/dev/null
-security add-trusted-cert -p codeSign -k "$KEYCHAIN_PATH" "$CERTIFICATE_PEM" >/dev/null 2>&1
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null 2>&1
 security list-keychains -d user -s "$KEYCHAIN_PATH" "${EXISTING_KEYCHAINS[@]}"
 
 IDENTITY="$(
-  security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
-    | awk -F'"' '/"[^"]+"/ { print $2; exit }'
+  openssl x509 -in "$CERTIFICATE_PEM" -noout -fingerprint -sha1 \
+    | sed 's/^sha1 Fingerprint=//; s/://g'
 )"
 
 if [[ -z "$IDENTITY" ]]; then
-  echo "error: imported certificate did not produce a valid codesigning identity" >&2
+  echo "error: imported certificate did not include a SHA-1 signing identity" >&2
   exit 1
 fi
 
