@@ -2,6 +2,30 @@
 import AudioToolbox
 import Foundation
 
+private final class SingleBufferAudioInputProvider: @unchecked Sendable {
+    private let lock = NSLock()
+    private let buffer: AVAudioPCMBuffer
+    private var didProvideInput = false
+
+    init(buffer: AVAudioPCMBuffer) {
+        self.buffer = buffer
+    }
+
+    func nextBuffer(_ outStatus: UnsafeMutablePointer<AVAudioConverterInputStatus>) -> AVAudioBuffer? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard !didProvideInput else {
+            outStatus.pointee = .noDataNow
+            return nil
+        }
+
+        didProvideInput = true
+        outStatus.pointee = .haveData
+        return buffer
+    }
+}
+
 final class AudioCaptureManager {
     private var audioEngine: AVAudioEngine?
     private var converter: AVAudioConverter?
@@ -105,16 +129,10 @@ final class AudioCaptureManager {
         guard capacity > 0,
               let output = AVAudioPCMBuffer(pcmFormat: converter.outputFormat, frameCapacity: capacity) else { return }
 
-        var hasInput = true
+        let inputProvider = SingleBufferAudioInputProvider(buffer: buffer)
         var error: NSError?
         let status = converter.convert(to: output, error: &error) { _, outStatus in
-            if hasInput {
-                hasInput = false
-                outStatus.pointee = .haveData
-                return buffer
-            }
-            outStatus.pointee = .noDataNow
-            return nil
+            inputProvider.nextBuffer(outStatus)
         }
 
         guard status != .error, error == nil, output.frameLength > 0 else {
