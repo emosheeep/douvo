@@ -20,15 +20,22 @@
 
 <table>
   <tr>
-    <td align="center">
-      <img src="./docs/assets/demo.gif" width="380" alt="Douvo 录音并插入文本到其他应用" />
+    <td align="center" colspan="2">
+      <img src="./docs/assets/demo.gif" width="520" alt="Douvo 录音并插入文本到其他应用" />
       <br />
       <sub>输入到当前应用</sub>
     </td>
+  </tr>
+  <tr>
     <td align="center">
       <img src="./docs/assets/readme/reduce-emotion.gif" width="380" alt="Douvo 在 AI 纠错中弱化情绪化表达" />
       <br />
       <sub>弱化情绪化表达</sub>
+    </td>
+    <td align="center">
+      <img src="./docs/assets/readme/vocabulary-correction.gif" width="380" alt="Douvo 在 AI 纠错中应用用户词库" />
+      <br />
+      <sub>按词库纠正术语</sub>
     </td>
   </tr>
 </table>

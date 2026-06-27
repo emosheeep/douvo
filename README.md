@@ -20,15 +20,22 @@
 
 <table>
   <tr>
-    <td align="center">
-      <img src="./docs/assets/demo.gif" width="380" alt="Douvo recording and inserting text into another app" />
+    <td align="center" colspan="2">
+      <img src="./docs/assets/demo.gif" width="520" alt="Douvo recording and inserting text into another app" />
       <br />
       <sub>Dictate into the current app</sub>
     </td>
+  </tr>
+  <tr>
     <td align="center">
       <img src="./docs/assets/readme/reduce-emotion.gif" width="380" alt="Douvo reducing emotional wording in AI correction" />
       <br />
       <sub>Reduce emotional wording</sub>
+    </td>
+    <td align="center">
+      <img src="./docs/assets/readme/vocabulary-correction.gif" width="380" alt="Douvo applying vocabulary hints during AI correction" />
+      <br />
+      <sub>Apply vocabulary hints</sub>
     </td>
   </tr>
 </table>
