@@ -40,6 +40,13 @@ cask "${CASK_NAME}" do
 
   app "${APP_NAME}.app"
 
+  caveats <<~EOS
+    Current release builds are not notarized. If macOS blocks first launch, trust the installed app once:
+
+      xattr -dr com.apple.quarantine /Applications/${APP_NAME}.app
+      open /Applications/${APP_NAME}.app
+  EOS
+
   zap trash: [
     "~/Library/Caches/${BUNDLE_ID}",
     "~/Library/HTTPStorages/${BUNDLE_ID}",

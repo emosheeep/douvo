@@ -77,10 +77,11 @@ jobs:
           body: |
             Download the DMG, open it, and drag `Douvo.app` to Applications.
 
-            Browser downloads can be tagged with Gatekeeper quarantine. If macOS blocks first launch or says the app is from an unidentified developer, remove quarantine from the installed app:
+            Browser and Homebrew downloads can be tagged with Gatekeeper quarantine. If macOS blocks first launch or says the app is from an unidentified developer, trust the installed app once:
 
             ```bash
             xattr -dr com.apple.quarantine /Applications/Douvo.app
+            open /Applications/Douvo.app
             ```
 
             More detail: [README — Install](https://github.com/${{ github.repository }}/blob/main/README.md#install) · [SPARKLE.md](https://github.com/${{ github.repository }}/blob/main/SPARKLE.md)

@@ -89,15 +89,20 @@ flowchart TD
 
 1. 打开 DMG。
 2. 把 **`Douvo.app`** 拖到 **Applications** 快捷方式上。
-3. 弹出磁盘镜像，然后从 **Applications** 或 Spotlight 启动 **Douvo**。
+3. 弹出磁盘镜像。
+4. 如果 macOS 拦截首次启动，信任已安装的 app 一次：
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/Douvo.app
+   open /Applications/Douvo.app
+   ```
 
 DMG 里只有 `Douvo.app` 和 **Applications** 快捷方式。当前 release build 还没有 notarize，所以 macOS 首次启动时可能需要你手动确认，或移除 quarantine 标记。
 
 如果你更习惯用 tap 管理应用，也可以使用 Homebrew：
 
 ```bash
-brew tap rhinoc/tap
-brew install --cask douvo
+brew install --cask rhinoc/tap/douvo
 ```
 
 Homebrew Cask 安装的也是 GitHub Releases 上同一个 DMG，不是单独签名的安装包。
@@ -106,12 +111,11 @@ Homebrew Cask 安装的也是 GitHub Releases 上同一个 DMG，不是单独签
 
 ### 首次启动与 Gatekeeper
 
-浏览器和 Homebrew 下载的应用都可能带有 Gatekeeper **quarantine** 标记（`com.apple.quarantine`）。如果 macOS 提示 Douvo 无法打开，或提示来自未识别开发者，请先把 app 安装到 **Applications**，然后移除 quarantine 标记。
-
-移除已安装 app 的 quarantine 标记：
+浏览器和 Homebrew 下载的应用都可能带有 Gatekeeper **quarantine** 标记（`com.apple.quarantine`）。如果 macOS 提示 Douvo 无法打开，或提示来自未识别开发者，请先把 app 安装到 **Applications**，然后移除 quarantine 标记并打开一次。
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/Douvo.app
+open /Applications/Douvo.app
 ```
 
 ## 权限

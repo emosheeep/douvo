@@ -89,15 +89,20 @@ Recommended: download the latest **`douvo-<version>-macos.dmg`** from **[GitHub 
 
 1. Open the DMG.
 2. Drag **`Douvo.app`** onto the **Applications** shortcut.
-3. Eject the disk image, then launch **Douvo** from **Applications** or Spotlight.
+3. Eject the disk image.
+4. If macOS blocks first launch, trust the installed app once:
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/Douvo.app
+   open /Applications/Douvo.app
+   ```
 
 The DMG contains `Douvo.app` and an **Applications** shortcut only. Current release builds are not notarized, so macOS may ask you to confirm first launch or remove quarantine manually.
 
 Homebrew is also available if you prefer tap-based installs:
 
 ```bash
-brew tap rhinoc/tap
-brew install --cask douvo
+brew install --cask rhinoc/tap/douvo
 ```
 
 Homebrew Cask installs the same DMG artifact from GitHub Releases, not a separately signed package.
@@ -106,12 +111,11 @@ In-app updates are handled by Sparkle and use the same DMG artifact published on
 
 ### First launch and Gatekeeper
 
-Browser and Homebrew downloads can be tagged with Gatekeeper **quarantine** (`com.apple.quarantine`). If macOS warns that Douvo cannot be opened or is from an unidentified developer, remove quarantine after copying or installing the app to **Applications**.
-
-Remove quarantine from the installed app:
+Browser and Homebrew downloads can be tagged with Gatekeeper **quarantine** (`com.apple.quarantine`). If macOS warns that Douvo cannot be opened or is from an unidentified developer, remove quarantine after copying or installing the app to **Applications**, then open it once.
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/Douvo.app
+open /Applications/Douvo.app
 ```
 
 ## Permissions
