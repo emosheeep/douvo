@@ -25,10 +25,13 @@ swift run Douvo --prompt-lab docs/local-llm-eval/prompt-lab.sample.json
 
 Do not bypass signing with ad-hoc signatures. A locally built `.app` needs a stable code-signing identity because macOS Accessibility permissions and app identity are signature-sensitive. Ad-hoc builds can appear to work once and then fail after rebuilds or permission changes.
 
-`scripts/build-app.sh` intentionally refuses ad-hoc signing. It requires one of:
+`scripts/build-app.sh` intentionally refuses ad-hoc signing. It uses one of:
 
 - `CODESIGN_IDENTITY` set to a valid local signing identity.
 - A local keychain identity named `Douvo Local Code Signing`.
+- `scripts/ensure-local-code-signing-identity.sh`, run explicitly, which creates `Douvo Local Code Signing` in a Douvo-specific local keychain.
+
+Never set `CODESIGN_IDENTITY="-"` to make a build pass. That produces an ad-hoc signature and invalidates the permission model this project depends on.
 
 Check available identities:
 
@@ -36,14 +39,17 @@ Check available identities:
 security find-identity -v -p codesigning
 ```
 
-Create a local identity with Keychain Access:
+Create or verify the local identity:
 
-1. Open **Keychain Access**.
-2. Choose **Certificate Assistant -> Create a Certificate...**.
-3. Name it `Douvo Local Code Signing`.
-4. Set **Identity Type** to **Self Signed Root**.
-5. Set **Certificate Type** to **Code Signing**.
-6. Create it in the login keychain.
+```bash
+scripts/ensure-local-code-signing-identity.sh
+LOCAL_CODESIGN_KEYCHAIN="$HOME/Library/Application Support/Douvo/CodeSigning/douvo-local-code-signing.keychain-db"
+security find-identity -v -p codesigning "$LOCAL_CODESIGN_KEYCHAIN" | rg "Douvo Local Code Signing"
+```
+
+Do not run `scripts/ensure-local-code-signing-identity.sh` implicitly from another script or agent workflow. Creating or trusting a code-signing identity can trigger macOS security authentication.
+
+After the identity exists, build scripts may reuse the Douvo-specific local keychain without prompting for the user's login keychain password. Repeated password prompts usually mean the local signing keychain is stale or being recreated.
 
 Then build:
 
@@ -52,11 +58,15 @@ Then build:
 open .build/release/Douvo.app
 ```
 
+`swift run Douvo` does not require code signing, but it should only be used for quick development checks. Permission-sensitive behavior must be checked from a signed `.app` bundle.
+
 If you use a different certificate name:
 
 ```bash
 CODESIGN_IDENTITY="Your Code Signing Identity" ./scripts/build-app.sh
 ```
+
+For local UI and permission testing, `scripts/install-dev-app.sh` builds and installs `/Applications/Douvo Dev.app` with bundle identifier `local.douvo.dev`. It may quit an existing dev app, replace the app bundle in `/Applications`, register it with LaunchServices, and open it. Do not run this script from an agent workflow unless the user explicitly asks for that action. Details live in `docs/dev-local-build.md`.
 
 ## Local MLX build notes
 

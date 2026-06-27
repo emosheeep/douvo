@@ -19,7 +19,15 @@ jobs:
       - name: Swift build
         run: swift build -v
 
+      - name: Validate app metadata and scripts
+        run: |
+          bash -n scripts/build-app.sh
+          bash -n scripts/ensure-local-code-signing-identity.sh
+          bash -n scripts/install-dev-app.sh
+          plutil -lint Sources/Douvo/Info.plist
+
       - name: Import code signing identity
+        if: github.event_name != 'pull_request'
         env:
           BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
           P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
@@ -27,4 +35,5 @@ jobs:
         run: scripts/code-sign-import.sh
 
       - name: Build app bundle
+        if: github.event_name != 'pull_request'
         run: scripts/build-app.sh
