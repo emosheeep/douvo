@@ -55,10 +55,70 @@ struct HotkeyShortcut: Codable, Equatable {
     }
 
     var settingsDisplayName: String {
-        guard isModifier else { return displayName }
+        let localizedName = localizedDisplayName
+        guard isModifier else { return localizedName }
         let symbol = compactDisplayName
-        guard symbol != displayName else { return displayName }
-        return "\(displayName) \(symbol)"
+        guard symbol != displayName else { return localizedName }
+        return "\(localizedName) \(symbol)"
+    }
+
+    private var localizedDisplayName: String {
+        switch displayName {
+        case "Left Command":
+            L10n.text(en: "Left Command", zh: "左 Command")
+        case "Right Command":
+            L10n.text(en: "Right Command", zh: "右 Command")
+        case "Left Option":
+            L10n.text(en: "Left Option", zh: "左 Option")
+        case "Right Option":
+            L10n.text(en: "Right Option", zh: "右 Option")
+        case "Left Control":
+            L10n.text(en: "Left Control", zh: "左 Control")
+        case "Right Control":
+            L10n.text(en: "Right Control", zh: "右 Control")
+        case "Left Shift":
+            L10n.text(en: "Left Shift", zh: "左 Shift")
+        case "Right Shift":
+            L10n.text(en: "Right Shift", zh: "右 Shift")
+        case "Left Arrow":
+            L10n.text(en: "Left Arrow", zh: "左箭头")
+        case "Right Arrow":
+            L10n.text(en: "Right Arrow", zh: "右箭头")
+        case "Up Arrow":
+            L10n.text(en: "Up Arrow", zh: "上箭头")
+        case "Down Arrow":
+            L10n.text(en: "Down Arrow", zh: "下箭头")
+        case "Return":
+            L10n.text(en: "Return", zh: "回车")
+        case "Tab":
+            L10n.text(en: "Tab", zh: "Tab")
+        case "Space":
+            L10n.text(en: "Space", zh: "空格")
+        case "Delete":
+            L10n.text(en: "Delete", zh: "删除")
+        case "Escape":
+            L10n.text(en: "Escape", zh: "Escape")
+        case "Clear":
+            L10n.text(en: "Clear", zh: "清除")
+        case "Help":
+            L10n.text(en: "Help", zh: "帮助")
+        case "Home":
+            L10n.text(en: "Home", zh: "Home")
+        case "End":
+            L10n.text(en: "End", zh: "End")
+        case "Page Up":
+            L10n.text(en: "Page Up", zh: "Page Up")
+        case "Page Down":
+            L10n.text(en: "Page Down", zh: "Page Down")
+        case "Forward Delete":
+            L10n.text(en: "Forward Delete", zh: "向前删除")
+        case let name where name.hasPrefix("Keypad "):
+            L10n.text(en: name, zh: name.replacingOccurrences(of: "Keypad", with: "小键盘"))
+        case let name where name.hasPrefix("Key "):
+            L10n.text(en: name, zh: name.replacingOccurrences(of: "Key", with: "按键"))
+        default:
+            displayName
+        }
     }
 
     func flagIsDown(in flags: CGEventFlags) -> Bool {

@@ -772,7 +772,7 @@ final class TranscriptionManager {
         guard activeSessionID == sessionID else { return }
         transcriptionTrace?.finishSpan("audio.start_capture", metadata: ["result": "failed"])
         AppLog.error("Audio capture failed error=\(error.localizedDescription)")
-        appState.errorMessage = "Microphone failed: \(error.localizedDescription)"
+        appState.errorMessage = L10n.text(en: "Microphone failed: \(error.localizedDescription)", zh: "麦克风失败：\(error.localizedDescription)")
         finishCurrentTrace(outcome: "failed", metadata: [
             "reason": "audio_capture_failed",
             "error": error.localizedDescription

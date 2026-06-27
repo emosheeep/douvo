@@ -23,7 +23,7 @@ enum AppLanguageStore {
         get {
             guard let rawValue = UserDefaults.standard.string(forKey: key),
                   let language = AppLanguage(rawValue: rawValue) else {
-                return .english
+                return systemDefault
             }
             return language
         }
@@ -31,6 +31,13 @@ enum AppLanguageStore {
             UserDefaults.standard.set(newValue.rawValue, forKey: key)
             AppLog.info("App language set to \(newValue.rawValue)")
         }
+    }
+
+    private static var systemDefault: AppLanguage {
+        guard let preferredLanguage = Locale.preferredLanguages.first?.lowercased() else {
+            return .english
+        }
+        return preferredLanguage.hasPrefix("zh") ? .simplifiedChinese : .english
     }
 }
 

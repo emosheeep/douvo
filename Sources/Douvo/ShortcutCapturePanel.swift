@@ -48,10 +48,10 @@ final class ShortcutCapturePanel: NSObject, NSWindowDelegate {
         self.onCancel = onCancel
 
         let model = SettingsPanelModel(
+            toggleShortcut: currentToggleShortcut,
+            holdShortcut: currentHoldShortcut,
             toggleShortcutName: Self.shortcutName(currentToggleShortcut),
             holdShortcutName: Self.holdShortcutName(currentHoldShortcut),
-            resetToggleShortcutName: HotkeyShortcut.defaultShortcut.settingsDisplayName,
-            resetHoldShortcutName: HotkeyShortcut.defaultHoldShortcut.settingsDisplayName,
             loginStatus: loginStatus,
             isKeyboardCaptureActive: isKeyboardCaptureActive,
             keyboardCaptureError: keyboardCaptureError,
@@ -125,8 +125,10 @@ final class ShortcutCapturePanel: NSObject, NSWindowDelegate {
     func complete(with shortcut: HotkeyShortcut, for slot: HotkeyShortcutSlot) {
         switch slot {
         case .toggle:
+            model?.toggleShortcut = shortcut
             model?.toggleShortcutName = shortcut.settingsDisplayName
         case .hold:
+            model?.holdShortcut = shortcut
             model?.holdShortcutName = shortcut.settingsDisplayName
         }
         model?.capturingShortcut = nil
@@ -146,6 +148,8 @@ final class ShortcutCapturePanel: NSObject, NSWindowDelegate {
     }
 
     func refreshShortcuts(toggleShortcut: HotkeyShortcut?, holdShortcut: HotkeyShortcut?) {
+        model?.toggleShortcut = toggleShortcut
+        model?.holdShortcut = holdShortcut
         model?.toggleShortcutName = Self.shortcutName(toggleShortcut)
         model?.holdShortcutName = Self.holdShortcutName(holdShortcut)
         model?.capturingShortcut = nil
@@ -162,7 +166,11 @@ final class ShortcutCapturePanel: NSObject, NSWindowDelegate {
     }
 
     func refreshLanguage(_ language: AppLanguage) {
-        model?.selectedLanguage = language
+        guard let model else { return }
+        model.selectedLanguage = language
+        model.toggleShortcutName = Self.shortcutName(model.toggleShortcut)
+        model.holdShortcutName = Self.holdShortcutName(model.holdShortcut)
+        model.refreshMLXRuntimeDiagnostic()
         panel?.title = L10n.text(en: "Settings", zh: "设置")
     }
 
@@ -281,11 +289,11 @@ private final class SettingsPanelWindow: NSPanel {
 }
 
 private final class SettingsPanelModel: ObservableObject {
+    @Published var toggleShortcut: HotkeyShortcut?
+    @Published var holdShortcut: HotkeyShortcut?
     @Published var toggleShortcutName: String
     @Published var holdShortcutName: String
     @Published var loginStatus: LoginStatus
-    let resetToggleShortcutName: String
-    let resetHoldShortcutName: String
     @Published var isKeyboardCaptureActive: Bool
     @Published var keyboardCaptureError: String?
     @Published var capturingShortcut: HotkeyShortcutSlot?
@@ -314,10 +322,10 @@ private final class SettingsPanelModel: ObservableObject {
     @Published var mlxRuntimeDiagnostic = LocalMLXRuntimeDiagnostic.current()
 
     init(
+        toggleShortcut: HotkeyShortcut?,
+        holdShortcut: HotkeyShortcut?,
         toggleShortcutName: String,
         holdShortcutName: String,
-        resetToggleShortcutName: String,
-        resetHoldShortcutName: String,
         loginStatus: LoginStatus,
         isKeyboardCaptureActive: Bool,
         keyboardCaptureError: String?,
@@ -327,10 +335,10 @@ private final class SettingsPanelModel: ObservableObject {
         selectedASRProvider: ASRProvider,
         selectedLanguage: AppLanguage
     ) {
+        self.toggleShortcut = toggleShortcut
+        self.holdShortcut = holdShortcut
         self.toggleShortcutName = toggleShortcutName
         self.holdShortcutName = holdShortcutName
-        self.resetToggleShortcutName = resetToggleShortcutName
-        self.resetHoldShortcutName = resetHoldShortcutName
         self.loginStatus = loginStatus
         self.isKeyboardCaptureActive = isKeyboardCaptureActive
         self.keyboardCaptureError = keyboardCaptureError
@@ -633,7 +641,7 @@ private struct SettingsPanelView: View {
     }
 
     private var generalTab: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: Self.settingsGroupSpacing) {
             settingsTitle(L10n.text(en: "Shortcuts", zh: "快捷键"))
 
             settingsSection {
@@ -647,13 +655,15 @@ private struct SettingsPanelView: View {
                             model.capturingShortcut = nil
                             model.shortcutErrorMessage = nil
                             onResetToggle()
-                            model.toggleShortcutName = model.resetToggleShortcutName
+                            model.toggleShortcut = HotkeyShortcut.defaultShortcut
+                            model.toggleShortcutName = HotkeyShortcut.defaultShortcut.settingsDisplayName
                             onEndCapture()
                         },
                         onClear: {
                             model.capturingShortcut = nil
                             model.shortcutErrorMessage = nil
                             onClearToggle()
+                            model.toggleShortcut = nil
                             model.toggleShortcutName = L10n.text(en: "Not Set", zh: "未设置")
                             onEndCapture()
                         }
@@ -672,13 +682,15 @@ private struct SettingsPanelView: View {
                             model.capturingShortcut = nil
                             model.shortcutErrorMessage = nil
                             onResetHold()
-                            model.holdShortcutName = model.resetHoldShortcutName
+                            model.holdShortcut = HotkeyShortcut.defaultHoldShortcut
+                            model.holdShortcutName = HotkeyShortcut.defaultHoldShortcut.settingsDisplayName
                             onEndCapture()
                         },
                         onClear: {
                             model.capturingShortcut = nil
                             model.shortcutErrorMessage = nil
                             onClearHold()
+                            model.holdShortcut = nil
                             model.holdShortcutName = L10n.text(en: "Not Set", zh: "未设置")
                             onEndCapture()
                         }
@@ -706,11 +718,13 @@ private struct SettingsPanelView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .frame(width: 240, alignment: .leading)
+                    .frame(width: Self.settingsRowContentWidth, alignment: .trailing)
                 }
+            }
 
-                settingsDivider()
+            settingsTitle(L10n.text(en: "Interface", zh: "界面"))
 
+            settingsSection {
                 settingsListRow(L10n.text(en: "Language", zh: "语言")) {
                     Picker("", selection: languageBinding) {
                         ForEach(AppLanguage.allCases) { language in
@@ -849,11 +863,11 @@ private struct SettingsPanelView: View {
     }
 
     private var accountTab: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            settingsTitle("Doubao")
+        VStack(alignment: .leading, spacing: Self.settingsGroupSpacing) {
+            settingsTitle(L10n.text(en: "Doubao", zh: "豆包"))
 
             settingsSection {
-                settingsListRow(L10n.text(en: "ASR Provider", zh: "ASR Provider")) {
+                settingsListRow(L10n.text(en: "ASR Channel", zh: "ASR 通道")) {
                     Picker("", selection: asrProviderBinding) {
                         ForEach(ASRProvider.allCases) { provider in
                             Text(provider.displayName).tag(provider)
@@ -940,7 +954,7 @@ private struct SettingsPanelView: View {
 
     private var advancedTab: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: Self.settingsGroupSpacing) {
                 settingsTitle(L10n.text(en: "Basic", zh: "基础"))
 
                 settingsSection {
@@ -1059,7 +1073,7 @@ private struct SettingsPanelView: View {
                         promptTextEditor(
                             text: localSystemPromptBinding,
                             height: $systemPromptEditorHeight,
-                            placeholder: LocalLLMSettingsStore.defaultSystemPrompt
+                            placeholder: L10n.text(en: "Use the built-in system prompt", zh: "使用内置系统提示词")
                         )
                     }
 
@@ -1069,7 +1083,7 @@ private struct SettingsPanelView: View {
                         promptTextEditor(
                             text: localUserPromptTemplateBinding,
                             height: $userMessageEditorHeight,
-                            placeholder: LocalLLMSettingsStore.defaultUserPromptTemplate
+                            placeholder: L10n.text(en: "Use the built-in user message template", zh: "使用内置用户消息模板")
                         )
                     }
                 }
@@ -1243,7 +1257,7 @@ private struct SettingsPanelView: View {
 
             settingsDivider()
 
-            correctionListRow(L10n.text(en: "Provider", zh: "Provider"), contentAlignment: .trailing) {
+            correctionListRow(L10n.text(en: "Provider", zh: "服务商"), contentAlignment: .trailing) {
                 Picker("", selection: remoteLLMProviderBinding) {
                     ForEach(RemoteLLMProvider.allCases) { provider in
                         Text(provider.displayName).tag(provider)
@@ -2369,7 +2383,7 @@ private struct SettingsPanelView: View {
 
     private var diagnoseTab: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: Self.settingsGroupSpacing) {
                 settingsTitle(L10n.text(en: "System", zh: "系统"))
 
                 settingsSection {
@@ -2388,7 +2402,7 @@ private struct SettingsPanelView: View {
 
                     settingsDivider()
 
-                    settingsListRow("MLX Runtime", height: 44) {
+                    settingsListRow(L10n.text(en: "MLX Runtime", zh: "MLX 运行时"), height: 44) {
                         statusText(
                             model.mlxRuntimeDiagnostic.message,
                             isHealthy: model.mlxRuntimeDiagnostic.isAvailable
@@ -2431,10 +2445,6 @@ private struct SettingsPanelView: View {
                 settingsSection {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 8) {
-                            Text(L10n.text(en: "Backend", zh: "后端"))
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundColor(.secondary)
-
                             correctionDebugBackendMenu
 
                             Spacer(minLength: 8)
@@ -2448,8 +2458,8 @@ private struct SettingsPanelView: View {
                                 .disabled(correctionDebugTraceURL == nil)
                                 .help(L10n.text(en: "Show the latest debug model trace in Finder.", zh: "在 Finder 中显示最新调试模型 trace。"))
                         }
+                        .frame(maxWidth: .infinity, alignment: .trailing)
 
-                        debugTextLabel(L10n.text(en: "Input", zh: "输入"))
                         debugInputEditor
 
                         if !correctionDebugOutput.isEmpty {
@@ -2656,7 +2666,7 @@ private struct SettingsPanelView: View {
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundColor(.primary)
 
-            Text(L10n.text(en: "Version \(model.appVersion)", zh: "版本 \(model.appVersion)"))
+            Text("v\(model.appVersion)")
                 .font(.system(size: 12))
                 .foregroundColor(.secondary)
 
@@ -2808,6 +2818,7 @@ private struct SettingsPanelView: View {
     private static let settingsLabelWidth: CGFloat = 90
     private static let settingsContentWidth: CGFloat = 320
     private static let settingsGroupWidth: CGFloat = settingsLabelWidth + 12 + settingsContentWidth
+    private static let settingsGroupSpacing: CGFloat = 10
     private static let settingsRowLabelWidth: CGFloat = 112
     private static let settingsRowContentWidth: CGFloat = settingsGroupWidth - 28 - 12 - settingsRowLabelWidth
     private static let correctionLabelWidth: CGFloat = 104

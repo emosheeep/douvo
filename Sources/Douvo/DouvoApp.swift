@@ -205,12 +205,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .checking:
                 menu.addItem(disabledItem(L10n.text(en: "Checking login...", zh: "正在检查登录状态...")))
             case .loggedIn:
-                menu.addItem(disabledItem(L10n.text(en: "Web ASR logged in", zh: "Web ASR 已登录")))
+                menu.addItem(disabledItem(L10n.text(en: "Web ASR logged in", zh: "网页 ASR 已登录")))
             case .notLoggedIn:
                 menu.addItem(NSMenuItem(title: L10n.text(en: "Log In", zh: "登录"), action: #selector(showLogin), keyEquivalent: "l"))
             }
         case .android:
-            menu.addItem(disabledItem(L10n.text(en: "Android ASR", zh: "Android ASR")))
+            menu.addItem(disabledItem(L10n.text(en: "Android ASR ready", zh: "Android ASR 已就绪")))
         case .mix:
             switch appState.loginStatus {
             case .checking:
