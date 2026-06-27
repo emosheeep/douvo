@@ -56,7 +56,26 @@ if [[ -z "$CODESIGN_IDENTITY" ]]; then
   )"
 fi
 
-if [[ -n "$CODESIGN_IDENTITY" ]]; then
+if [[ -z "$CODESIGN_IDENTITY" && -z "${CODESIGN_KEYCHAIN:-}" ]]; then
+  LOCAL_CODESIGN_DIR="${DOUVO_LOCAL_CODESIGN_DIR:-$HOME/Library/Application Support/Douvo/CodeSigning}"
+  LOCAL_CODESIGN_KEYCHAIN="${DOUVO_CODESIGN_KEYCHAIN:-$LOCAL_CODESIGN_DIR/douvo-local-code-signing.keychain-db}"
+  LOCAL_CODESIGN_PASSWORD_FILE="${DOUVO_LOCAL_CODESIGN_PASSWORD_FILE:-$LOCAL_CODESIGN_DIR/keychain-password}"
+  if [[ -f "$LOCAL_CODESIGN_KEYCHAIN" && -f "$LOCAL_CODESIGN_PASSWORD_FILE" ]]; then
+    security unlock-keychain -p "$(<"$LOCAL_CODESIGN_PASSWORD_FILE")" "$LOCAL_CODESIGN_KEYCHAIN"
+    CODESIGN_KEYCHAIN="$LOCAL_CODESIGN_KEYCHAIN"
+    CODESIGN_IDENTITY="$(
+      security find-identity -v -p codesigning "$CODESIGN_KEYCHAIN" 2>/dev/null \
+        | awk -F'"' '/Douvo Local Code Signing/ { print $1; exit }' \
+        | awk '{ print $2 }'
+    )"
+  fi
+fi
+
+if [[ "$CODESIGN_IDENTITY" == "-" ]]; then
+  echo "error: ad-hoc signing is not supported for Douvo app bundles." >&2
+  echo "Use a stable local identity. Run scripts/ensure-local-code-signing-identity.sh explicitly if you want the repo to create one." >&2
+  exit 1
+elif [[ -n "$CODESIGN_IDENTITY" ]]; then
   codesign_args=(--force --deep)
   if [[ -n "${CODESIGN_KEYCHAIN:-}" ]]; then
     codesign_args+=(--keychain "$CODESIGN_KEYCHAIN")
@@ -64,7 +83,8 @@ if [[ -n "$CODESIGN_IDENTITY" ]]; then
   codesign "${codesign_args[@]}" --sign "$CODESIGN_IDENTITY" "$APP" >/dev/null
 else
   echo "error: no codesigning identity found. Refusing to build an ad-hoc signed app." >&2
-  echo "Set CODESIGN_IDENTITY or install 'Douvo Local Code Signing'." >&2
+  echo "Set CODESIGN_IDENTITY or run scripts/ensure-local-code-signing-identity.sh explicitly." >&2
+  echo "See docs/dev-local-build.md for contributor setup details." >&2
   exit 1
 fi
 echo "$APP"

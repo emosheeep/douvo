@@ -11,7 +11,7 @@ Requirements:
 - Xcode or a compatible Swift 6 toolchain
 - Git
 - A Doubao account for end-to-end manual testing
-- A local code-signing identity for `./scripts/build-app.sh`
+- A local code-signing identity only when building a `.app` bundle or testing macOS permissions
 - Optional Hugging Face network access for local MLX model downloads
 - Optional remote LLM credentials for remote correction testing
 
@@ -33,6 +33,8 @@ Run during development:
 swift run Douvo
 ```
 
+`swift run Douvo` does not need code signing, but it is only a quick development run. macOS may attribute Microphone or Accessibility prompts to Terminal, your shell, or Xcode instead of a stable Douvo app identity, so do not use it as the final check for shortcut or permission behavior.
+
 Build a local app bundle:
 
 ```bash
@@ -40,7 +42,15 @@ Build a local app bundle:
 open .build/release/Douvo.app
 ```
 
-`build-app.sh` refuses ad-hoc signing. See **[AGENTS.md](./AGENTS.md)** for local signing setup.
+`build-app.sh` refuses ad-hoc signing. Run `scripts/ensure-local-code-signing-identity.sh` explicitly if you want the repo to create a local self-signed identity. See **[AGENTS.md](./AGENTS.md)** for signing rules.
+
+For permission-sensitive local UI testing, prefer the dev installer:
+
+```bash
+./scripts/install-dev-app.sh
+```
+
+It installs a separate `Douvo Dev` app at `/Applications/Douvo Dev.app` with bundle identifier `local.douvo.dev`, so local Accessibility and Microphone permissions do not collide with the release app. See **[docs/dev-local-build.md](./docs/dev-local-build.md)** for signing, permission, and verification details.
 
 ## Project shape
 
@@ -125,6 +135,7 @@ Release, then commits the generated version metadata as
 Release and local bundle creation lives in:
 
 - `scripts/build-app.sh`
+- `scripts/install-dev-app.sh`
 - `scripts/build-dmg.sh`
 - `scripts/update_version.sh`
 - `scripts/update_appcast.sh`
