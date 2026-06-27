@@ -24,6 +24,14 @@ final class TranscriptionManager {
     private var activeSessionID: UUID?
     private var transcriptionTrace: TranscriptionTrace?
     private var asrResultCount = 0
+    private var asrResultSummaryLogged = false
+    private var asrResultProgressSamples: [String] = []
+    private var maxASRResultCharsByProvider: [String: Int] = [:]
+    private var latestProviderTranscripts: [String: String] = [:]
+    private var activeASRProviders = Set<String>()
+    private var openedASRProviders = Set<String>()
+    private var finishedASRProviders = Set<String>()
+    private static let maxASRResultSummarySamples = 12
     // After the user stops, wait this long with no new results before submitting.
     private let finalQuietInterval: TimeInterval = 1.5
     // Absolute cap on how long we keep spinning after stop, in case finish never arrives.
@@ -51,7 +59,6 @@ final class TranscriptionManager {
                 AppLog.error("Hotkey event dropped: TranscriptionManager released event=\(event)")
                 return
             }
-            AppLog.info("Hotkey event callback invoked event=\(event) isMainThread=\(Thread.isMainThread)")
             if Thread.isMainThread {
                 self.handleHotkeyEvent(event)
             } else {
@@ -87,21 +94,23 @@ final class TranscriptionManager {
             handleAudioStarted()
         case .audioLevel(let level):
             appState.pushAudioLevel(level)
-        case .asrOpened:
-            handleASROpen()
-        case .asrResult(let text):
-            handleASRResult(text)
-        case .asrFinished:
-            handleASRFinish()
-        case .asrError(let error):
-            handleASRError(error)
-        case .asrAuthError:
-            handleASRAuthError()
+        case .recordingSaved(let path):
+            transcriptionTrace?.set("recording_path", path)
+            transcriptionTrace?.event("recording.saved", metadata: ["path": path])
+        case .asrOpened(let provider):
+            handleASROpen(provider: provider)
+        case .asrResult(let result):
+            handleASRResult(result)
+        case .asrFinished(let provider):
+            handleASRFinish(provider: provider)
+        case .asrError(let provider, let error):
+            handleASRError(error, provider: provider)
+        case .asrAuthError(let provider):
+            handleASRAuthError(provider: provider)
         }
     }
 
     private func handleHotkeyEvent(_ event: HotkeyManager.HotkeyEvent) {
-        AppLog.info("Hotkey event received event=\(event)")
         switch event {
         case .toggleRecording:
             toggleRecording()
@@ -114,15 +123,21 @@ final class TranscriptionManager {
         }
     }
 
-    private func handleASROpen() {
+    private func handleASROpen(provider: String) {
         guard appState.recordingState == .starting || appState.recordingState == .recording else { return }
-        transcriptionTrace?.finishSpan("asr.connect", metadata: ["result": "opened"])
-        transcriptionTrace?.event("asr.opened")
+        openedASRProviders.insert(provider)
+        transcriptionTrace?.event("asr.opened", metadata: ["asr_provider": provider])
+        if activeASRProviders.isSubset(of: openedASRProviders) {
+            transcriptionTrace?.finishSpan("asr.connect", metadata: [
+                "result": "opened",
+                "opened_providers": openedASRProviders.sorted().joined(separator: ",")
+            ])
+        }
         if appState.recordingState == .starting {
-            AppLog.info("ASR open; recording state -> recording")
+            AppLog.info("ASR open provider=\(provider); recording state -> recording")
             setRecordingState(.recording)
         } else {
-            AppLog.info("ASR open; recording state already recording")
+            AppLog.info("ASR open provider=\(provider); recording state already recording")
         }
     }
 
@@ -134,17 +149,35 @@ final class TranscriptionManager {
         setRecordingState(.recording)
     }
 
-    private func handleASRResult(_ text: String) {
+    private func handleASRResult(_ result: ASRRecognitionResult) {
+        let text = result.text
         asrResultCount += 1
         transcriptionTrace?.set("asr_result_count", asrResultCount)
         transcriptionTrace?.set("last_asr_result_chars", text.count)
+        transcriptionTrace?.set("last_asr_result_provider", result.provider)
+        transcriptionTrace?.set("last_asr_result_kind", result.kind)
+        transcriptionTrace?.set("last_asr_result_segments", result.segmentCount)
+        transcriptionTrace?.set("last_asr_result_final", result.isFinal)
+        for (key, value) in result.metadata {
+            transcriptionTrace?.set(key, value)
+        }
         if asrResultCount == 1 {
-            transcriptionTrace?.event("asr.first_result", metadata: ["chars": String(text.count)])
+            transcriptionTrace?.event("asr.first_result", metadata: [
+                "chars": String(text.count),
+                "provider": result.provider,
+                "kind": result.kind,
+                "segments": String(result.segmentCount)
+            ])
         }
-        if asrResultCount == 1 || asrResultCount % 25 == 0 || awaitingFinalResult {
-            AppLog.info("ASR result count=\(asrResultCount) chars=\(text.count) text=\"\(Self.preview(text))\"")
+        let acceptedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !acceptedText.isEmpty else {
+            transcriptionTrace?.event("asr.empty_result_ignored", metadata: [
+                "asr_provider": result.provider,
+                "kind": result.kind
+            ])
+            return
         }
-        if Self.isNonInputStatusMessage(text.trimmingCharacters(in: .whitespacesAndNewlines)) {
+        if Self.isNonInputStatusMessage(acceptedText) {
             if awaitingFinalResult || appState.recordingState == .stopping {
                 completeWithoutRecognizedText()
             } else {
@@ -153,7 +186,20 @@ final class TranscriptionManager {
             }
             return
         }
-        appState.transcript = text
+        latestProviderTranscripts[result.provider] = acceptedText
+        let providerMaxChars = max(maxASRResultCharsByProvider[result.provider] ?? 0, acceptedText.count)
+        maxASRResultCharsByProvider[result.provider] = providerMaxChars
+        let selectedText = displayTranscript()
+        transcriptionTrace?.set("max_asr_result_chars", maxASRResultCharsByProvider.values.max() ?? text.count)
+        transcriptionTrace?.set("selected_transcript_chars", selectedText.count)
+        transcriptionTrace?.set("asr.\(result.provider).max_result_chars", providerMaxChars)
+        transcriptionTrace?.set("asr.\(result.provider).selected_transcript_chars", acceptedText.count)
+        recordASRResultProgress(
+            result: result,
+            rawChars: text.count,
+            selectedChars: selectedText.count
+        )
+        appState.transcript = selectedText
         if appState.recordingState == .starting {
             setRecordingState(.recording)
         }
@@ -165,23 +211,35 @@ final class TranscriptionManager {
         }
     }
 
-    private func handleASRFinish() {
-        transcriptionTrace?.event("asr.finish_event")
-        AppLog.info("ASR finish event received")
+    private func handleASRFinish(provider: String) {
+        finishedASRProviders.insert(provider)
+        transcriptionTrace?.event("asr.finish_event", metadata: [
+            "asr_provider": provider,
+            "finished_providers": finishedASRProviders.sorted().joined(separator: ",")
+        ])
+        AppLog.info("ASR finish event received provider=\(provider)")
         if appState.recordingState == .stopping || appState.recordingState == .recording {
-            transcriptionTrace?.finishSpan("asr.final_wait", metadata: ["completion_trigger": "finish_event"])
-            completeTranscription(trigger: "asr_finish_event")
+            if activeASRProviders.isSubset(of: finishedASRProviders) {
+                transcriptionTrace?.finishSpan("asr.final_wait", metadata: [
+                    "completion_trigger": "finish_event",
+                    "finished_providers": finishedASRProviders.sorted().joined(separator: ",")
+                ])
+                completeTranscription(trigger: "asr_finish_event")
+            } else if awaitingFinalResult {
+                scheduleQuietCompletion()
+            }
         }
     }
 
-    private func handleASRError(_ error: TranscriptionSessionError?) {
+    private func handleASRError(_ error: TranscriptionSessionError?, provider: String) {
         guard appState.recordingState != .idle, !isHandlingConnectionError else { return }
         isHandlingConnectionError = true
         transcriptionTrace?.event("asr.connection_error", metadata: [
+            "asr_provider": provider,
             "state": String(describing: appState.recordingState),
             "has_error": String(error != nil)
         ])
-        AppLog.error("ASR connection error state=\(appState.recordingState) error=\(error?.localizedDescription ?? "unknown")")
+        AppLog.error("ASR connection error provider=\(provider) state=\(appState.recordingState) error=\(error?.localizedDescription ?? "unknown")")
         awaitingFinalResult = false
         cancelFinalTimers()
         cancelActiveSession()
@@ -194,6 +252,7 @@ final class TranscriptionManager {
             completeWithoutRecognizedText()
         } else {
             appState.errorMessage = "网络连接中断，请重试"
+            logASRResultSummary(reason: "connection_error")
             finishCurrentTrace(outcome: "failed", metadata: [
                 "reason": "asr_connection_error",
                 "error": error?.localizedDescription ?? "unknown"
@@ -202,9 +261,9 @@ final class TranscriptionManager {
         }
     }
 
-    private func handleASRAuthError() {
-        AppLog.error("ASR auth error")
-        handleAuthFailure()
+    private func handleASRAuthError(provider: String) {
+        AppLog.error("ASR auth error provider=\(provider)")
+        handleAuthFailure(provider: provider)
     }
 
     private func toggleRecording() {
@@ -236,16 +295,25 @@ final class TranscriptionManager {
     }
 
     private func startRecording() {
-        AppLog.info("Start recording requested loginStatus=\(appState.loginStatus)")
+        let provider = ASRProviderStore.selected
+        AppLog.info("Start recording requested provider=\(provider.rawValue) loginStatus=\(appState.loginStatus)")
         if transcriptionTrace != nil {
             finishCurrentTrace(outcome: "superseded", metadata: ["reason": "new_recording_started"])
         }
         transcriptionTrace = TranscriptionTrace()
         transcriptionTrace?.event("recording.start_requested", metadata: [
+            "asr_provider": provider.rawValue,
             "login_status": String(describing: appState.loginStatus)
         ])
         transcriptionTrace?.startSpan("recording.user_audio")
         asrResultCount = 0
+        asrResultSummaryLogged = false
+        asrResultProgressSamples.removeAll(keepingCapacity: true)
+        maxASRResultCharsByProvider.removeAll()
+        latestProviderTranscripts.removeAll()
+        activeASRProviders = provider.activeProviderKeys
+        openedASRProviders.removeAll()
+        finishedASRProviders.removeAll()
         isHandlingConnectionError = false
         setRecordingState(.starting)
         appState.transcript = ""
@@ -253,40 +321,59 @@ final class TranscriptionManager {
         appState.resetAudioLevels()
         overlayPanel.show()
 
-        guard appState.loginStatus == .loggedIn else {
-            AppLog.error("Start blocked: not logged in")
-            appState.errorMessage = "请先登录豆包"
-            webViewManager.showLoginWindow()
-            finishCurrentTrace(outcome: "blocked", metadata: ["reason": "not_logged_in"])
-            resetToIdle(after: 1.5)
+        var webParams: DoubaoASRParams?
+        if provider == .mix, !LocalLLMPostProcessor.isCorrectionEnabled {
+            AppLog.error("Start blocked: Mix ASR requires AI Correction")
+            appState.errorMessage = "Mix ASR 需要先开启 AI Correction"
+            finishCurrentTrace(outcome: "blocked", metadata: ["reason": "mix_requires_ai_correction"])
+            resetToIdle(after: 1.8)
             return
         }
 
-        transcriptionTrace?.startSpan("asr.load_params")
-        guard let params = ASRParamsStore.load() else {
-            transcriptionTrace?.finishSpan("asr.load_params", metadata: ["result": "missing"])
-            AppLog.error("Start blocked: ASR params missing")
-            appState.errorMessage = "登录参数缺失，请重新登录"
-            appState.loginStatus = .notLoggedIn
-            webViewManager.showLoginWindow()
-            finishCurrentTrace(outcome: "blocked", metadata: ["reason": "asr_params_missing"])
-            resetToIdle(after: 1.5)
-            return
+        if provider.usesWebASR {
+            guard appState.loginStatus == .loggedIn else {
+                AppLog.error("Start blocked: not logged in")
+                appState.errorMessage = "请先登录豆包"
+                webViewManager.showLoginWindow()
+                finishCurrentTrace(outcome: "blocked", metadata: ["reason": "not_logged_in"])
+                resetToIdle(after: 1.5)
+                return
+            }
+
+            transcriptionTrace?.startSpan("asr.load_params")
+            guard let params = ASRParamsStore.load() else {
+                transcriptionTrace?.finishSpan("asr.load_params", metadata: ["result": "missing"])
+                AppLog.error("Start blocked: ASR params missing")
+                appState.errorMessage = "登录参数缺失，请重新登录"
+                appState.loginStatus = .notLoggedIn
+                webViewManager.showLoginWindow()
+                finishCurrentTrace(outcome: "blocked", metadata: ["reason": "asr_params_missing"])
+                resetToIdle(after: 1.5)
+                return
+            }
+            webParams = params
+            transcriptionTrace?.finishSpan("asr.load_params", metadata: ["result": "loaded"])
+            AppLog.info("Connecting Web ASR params cookieCount=\(params.cookies.count) deviceIdSet=\(!params.deviceId.isEmpty) webIdSet=\(!params.webId.isEmpty)")
+            transcriptionTrace?.event("asr.connect_requested", metadata: [
+                "asr_provider": provider.rawValue,
+                "active_providers": activeASRProviders.sorted().joined(separator: ","),
+                "cookie_count": String(params.cookies.count),
+                "has_device_id": String(!params.deviceId.isEmpty),
+                "has_web_id": String(!params.webId.isEmpty)
+            ])
+        } else {
+            transcriptionTrace?.event("asr.connect_requested", metadata: [
+                "asr_provider": provider.rawValue,
+                "active_providers": activeASRProviders.sorted().joined(separator: ",")
+            ])
         }
-        transcriptionTrace?.finishSpan("asr.load_params", metadata: ["result": "loaded"])
 
         transcriptionTrace?.startSpan("audio.start_capture")
         usingCachedParams = true
-        AppLog.info("Connecting ASR params cookieCount=\(params.cookies.count) deviceIdSet=\(!params.deviceId.isEmpty) webIdSet=\(!params.webId.isEmpty)")
         transcriptionTrace?.startSpan("asr.connect")
-        transcriptionTrace?.event("asr.connect_requested", metadata: [
-            "cookie_count": String(params.cookies.count),
-            "has_device_id": String(!params.deviceId.isEmpty),
-            "has_web_id": String(!params.webId.isEmpty)
-        ])
 
         let sessionID = UUID()
-        let session = TranscriptionSession { [weak self] event in
+        let session = TranscriptionSession(provider: provider) { [weak self] event in
             self?.handleSessionEvent(event, sessionID: sessionID)
         }
         activeSessionID = sessionID
@@ -294,7 +381,7 @@ final class TranscriptionManager {
         sessionStartTask?.cancel()
         sessionStartTask = Task { [weak self, session] in
             do {
-                try await session.start(params: params)
+                try await session.start(webParams: webParams)
             } catch {
                 await MainActor.run {
                     self?.handleAudioStartFailure(error, sessionID: sessionID)
@@ -312,7 +399,7 @@ final class TranscriptionManager {
         AppLog.info("Stop capture now; finishing audio stream")
         transcriptionTrace?.event("asr.finish_requested")
         let session = transcriptionSession
-        Task { await session?.stop() }
+        Task { _ = await session?.stop() }
         transcriptionTrace?.startSpan("asr.final_wait")
         // Complete on server finish, or after quiet/hard timeout if the server keeps sending empty results.
         scheduleQuietCompletion()
@@ -373,6 +460,7 @@ final class TranscriptionManager {
         completionTask = nil
         cancelFinalTimers()
         cancelActiveSession()
+        logASRResultSummary(reason: "cancelled")
         finishCurrentTrace(outcome: "cancelled", metadata: ["current_text_chars": String(appState.transcript.count)])
         resetToIdle(after: 0)
     }
@@ -387,11 +475,25 @@ final class TranscriptionManager {
             "raw_chars": String(text.count)
         ])
         transcriptionTrace?.set("raw_chars", text.count)
+        transcriptionTrace?.set("raw_text", text)
         transcriptionTrace?.set("completion_trigger", trigger)
-        AppLog.info("Complete transcription chars=\(text.count) text=\"\(Self.preview(text))\"")
+        logASRResultSummary(reason: "complete_\(trigger)")
+        AppLog.info("Complete transcription trigger=\(trigger) chars=\(text.count)")
         if text.isEmpty || Self.isNonInputStatusMessage(text) {
             completeWithoutRecognizedText()
         } else {
+            let correctionRequest = correctionRequest(for: text)
+            transcriptionTrace?.set("correction.input_mode", correctionRequest.inputMode)
+            transcriptionTrace?.set("correction.prompt_chars", correctionRequest.promptText.count)
+            transcriptionTrace?.set("correction.fallback_chars", correctionRequest.fallbackText.count)
+            if let webText = correctionRequest.webText {
+                transcriptionTrace?.set("asr.web.final_text", webText)
+                transcriptionTrace?.set("asr.web.final_chars", webText.count)
+            }
+            if let androidText = correctionRequest.androidText {
+                transcriptionTrace?.set("asr.android.final_text", androidText)
+                transcriptionTrace?.set("asr.android.final_chars", androidText.count)
+            }
             isCompletingTranscription = true
             completionTask?.cancel()
             completionTask = Task { @MainActor [weak self] in
@@ -399,8 +501,10 @@ final class TranscriptionManager {
                 let finalText: String
                 do {
                     let result = try await CorrectionPostProcessor.shared.correctedTextWithTrace(
-                        for: text,
-                        requiresEnabled: true
+                        for: correctionRequest.promptText,
+                        requiresEnabled: true,
+                        promptConfiguration: correctionRequest.promptConfiguration,
+                        fallbackText: correctionRequest.fallbackText
                     )
                     self.transcriptionTrace?.addTimings(result.timings)
                     for (key, value) in result.metadata {
@@ -410,7 +514,7 @@ final class TranscriptionManager {
                 } catch {
                     self.transcriptionTrace?.event("correction.failed", metadata: ["error": error.localizedDescription])
                     AppLog.error("Local LLM postprocess failed; using raw text error=\(error.localizedDescription)")
-                    finalText = text
+                    finalText = correctionRequest.fallbackText
                 }
 
                 guard !Task.isCancelled, self.isCompletingTranscription else { return }
@@ -419,12 +523,109 @@ final class TranscriptionManager {
         }
     }
 
+    private struct CorrectionRequest {
+        let promptText: String
+        let fallbackText: String
+        let inputMode: String
+        let webText: String?
+        let androidText: String?
+        let promptConfiguration: LocalLLMPromptConfiguration?
+    }
+
+    private func correctionRequest(for recognizedText: String) -> CorrectionRequest {
+        guard ASRProviderStore.selected == .mix else {
+            return CorrectionRequest(
+                promptText: recognizedText,
+                fallbackText: recognizedText,
+                inputMode: "single",
+                webText: nil,
+                androidText: nil,
+                promptConfiguration: nil
+            )
+        }
+
+        let webText = providerTranscript("web")
+        let androidText = providerTranscript("android")
+        guard !webText.isEmpty, !androidText.isEmpty else {
+            let fallback = [webText, androidText, recognizedText]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first { !$0.isEmpty } ?? recognizedText
+            return CorrectionRequest(
+                promptText: fallback,
+                fallbackText: fallback,
+                inputMode: "mix_single_available",
+                webText: webText.isEmpty ? nil : webText,
+                androidText: androidText.isEmpty ? nil : androidText,
+                promptConfiguration: nil
+            )
+        }
+
+        if Self.areEquivalentMixTranscripts(webText, androidText) {
+            return CorrectionRequest(
+                promptText: webText,
+                fallbackText: webText,
+                inputMode: "mix_equivalent",
+                webText: webText,
+                androidText: androidText,
+                promptConfiguration: nil
+            )
+        }
+
+        let fallback = preferredMixFallback(webText: webText, androidText: androidText)
+        return CorrectionRequest(
+            promptText: Self.mixCorrectionPromptText(webText: webText, androidText: androidText),
+            fallbackText: fallback,
+            inputMode: "mix_dual",
+            webText: webText,
+            androidText: androidText,
+            promptConfiguration: Self.mixPromptConfiguration()
+        )
+    }
+
+    private func providerTranscript(_ provider: String) -> String {
+        latestProviderTranscripts[provider]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private func preferredMixFallback(webText: String, androidText: String) -> String {
+        if !webText.isEmpty { return webText }
+        return androidText
+    }
+
+    private func displayTranscript() -> String {
+        if ASRProviderStore.selected != .mix {
+            return latestProviderTranscripts.values.first ?? ""
+        }
+
+        return latestProviderTranscripts.values
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .max { lhs, rhs in lhs.count < rhs.count } ?? ""
+    }
+
+    nonisolated static func areEquivalentMixTranscripts(_ lhs: String, _ rhs: String) -> Bool {
+        let lhs = normalizeMixTranscriptForEquality(lhs)
+        let rhs = normalizeMixTranscriptForEquality(rhs)
+        return !lhs.isEmpty && lhs == rhs
+    }
+
+    private nonisolated static func normalizeMixTranscriptForEquality(_ text: String) -> String {
+        text.lowercased().unicodeScalars
+            .filter { scalar in
+                !CharacterSet.whitespacesAndNewlines.contains(scalar)
+                    && !CharacterSet.punctuationCharacters.contains(scalar)
+                    && !CharacterSet.symbols.contains(scalar)
+            }
+            .map(String.init)
+            .joined()
+    }
+
     private func finishTranscription(with text: String) {
         let finalText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        AppLog.info("Finish transcription chars=\(finalText.count) text=\"\(Self.preview(finalText))\"")
+        AppLog.info("Finish transcription chars=\(finalText.count)")
         isCompletingTranscription = false
         completionTask = nil
         appState.lastTranscript = finalText
+        transcriptionTrace?.set("corrected_text", finalText)
         transcriptionTrace?.startSpan("paste.enqueue")
         PasteHelper.copyAndPaste(finalText)
         transcriptionTrace?.finishSpan("paste.enqueue", metadata: ["final_chars": String(finalText.count)])
@@ -433,15 +634,23 @@ final class TranscriptionManager {
         resetToIdle(after: 0)
     }
 
-    private func handleAuthFailure() {
-        AppLog.error("Handling auth failure; clearing ASR params")
-        transcriptionTrace?.event("asr.auth_failure")
-        ASRParamsStore.clear()
+    private func handleAuthFailure(provider failedProvider: String) {
+        AppLog.error("Handling auth failure; clearing ASR params provider=\(failedProvider)")
+        transcriptionTrace?.event("asr.auth_failure", metadata: ["asr_provider": failedProvider])
+        switch failedProvider {
+        case "web":
+            ASRParamsStore.clear()
+            appState.loginStatus = .notLoggedIn
+        case "android":
+            DoubaoAndroidCredentialStore.clear()
+        default:
+            break
+        }
         usingCachedParams = false
         cancelActiveSession()
-        appState.loginStatus = .notLoggedIn
         appState.transcript = ""
-        appState.errorMessage = Self.authExpiredMessage
+        appState.errorMessage = failedProvider == "web" ? Self.authExpiredMessage : "Android ASR 凭据失效，将在下次录音时重新创建"
+        logASRResultSummary(reason: "auth_failure")
         finishCurrentTrace(outcome: "failed", metadata: ["reason": "auth_expired"])
         resetToIdle(after: 1.5)
         onAuthExpired?()
@@ -457,6 +666,7 @@ final class TranscriptionManager {
         cancelActiveSession()
         appState.errorMessage = Self.noRecognizedTextMessage
         appState.transcript = ""
+        logASRResultSummary(reason: "no_text")
         finishCurrentTrace(outcome: "no_text", metadata: ["reason": "no_recognized_text"])
         setRecordingState(.idle)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
@@ -512,6 +722,42 @@ final class TranscriptionManager {
         transcriptionTrace = nil
     }
 
+    private func recordASRResultProgress(
+        result: ASRRecognitionResult,
+        rawChars: Int,
+        selectedChars: Int
+    ) {
+        guard asrResultCount == 1 || asrResultCount % 25 == 0 || awaitingFinalResult else { return }
+        let sample = "\(asrResultCount):\(result.provider):\(result.kind):segments=\(result.segmentCount):chars=\(rawChars):selected=\(selectedChars):final=\(result.isFinal)"
+        Self.appendSummarySample(sample, to: &asrResultProgressSamples)
+    }
+
+    private func logASRResultSummary(reason: String) {
+        guard !asrResultSummaryLogged, asrResultCount > 0 else { return }
+        asrResultSummaryLogged = true
+        let providerMaxChars = maxASRResultCharsByProvider
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key):\($0.value)" }
+            .joined(separator: ",")
+        let latestChars = latestProviderTranscripts
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key):\($0.value.count)" }
+            .joined(separator: ",")
+        AppLog.info("ASR result summary reason=\(reason) total=\(asrResultCount) providerMaxChars=[\(providerMaxChars)] latestChars=[\(latestChars)] samples=\(Self.formatSamples(asrResultProgressSamples))")
+    }
+
+    private static func appendSummarySample(_ sample: String, to samples: inout [String]) {
+        if samples.count < Self.maxASRResultSummarySamples {
+            samples.append(sample)
+        } else {
+            samples[Self.maxASRResultSummarySamples - 1] = "...\(sample)"
+        }
+    }
+
+    private static func formatSamples(_ samples: [String]) -> String {
+        "[\(samples.joined(separator: ","))]"
+    }
+
     private func handleAudioStartFailure(_ error: Error, sessionID: UUID) {
         guard activeSessionID == sessionID else { return }
         transcriptionTrace?.finishSpan("audio.start_capture", metadata: ["result": "failed"])
@@ -535,6 +781,48 @@ final class TranscriptionManager {
 
     private static func preview(_ text: String) -> String {
         String(text.prefix(120)).replacingOccurrences(of: "\n", with: "\\n")
+    }
+
+    nonisolated static func mixCorrectionPromptText(webText: String, androidText: String) -> String {
+        """
+        识别结果一（Doubao Web）：
+        \(webText)
+
+        识别结果二（Doubao Android）：
+        \(androidText)
+
+        只输出合并后的最终正文：
+        """
+    }
+
+    private static func mixPromptConfiguration() -> LocalLLMPromptConfiguration {
+        let current = LocalLLMPromptConfiguration.current
+        let systemPrompt = """
+        \(current.systemPromptTemplate)
+
+        # 双路 ASR 合并
+        - 本次输入包含两路 ASR 识别结果；请综合两路信号，合并成一个最终文本
+        - 两路内容可能有重叠、漏字、错词或标点差异；优先保留共同语义
+        - 用另一结果补足明显漏识别或错识别的片段
+        - 不要重复输出同一内容
+        - 不要输出“识别结果一”“识别结果二”“Doubao Web”“Doubao Android”等输入标签
+        """
+
+        return LocalLLMPromptConfiguration(
+            systemPromptTemplate: systemPrompt,
+            userPromptTemplate: """
+            双路 ASR 输入：
+            {{original}}
+
+            只输出合并后的最终正文：
+            """,
+            vocabulary: current.vocabulary,
+            punctuationStyle: current.punctuationStyle,
+            removeFillerWords: current.removeFillerWords,
+            softenEmotionalLanguage: current.softenEmotionalLanguage,
+            outputStyle: current.outputStyle,
+            outputStyleStrength: current.outputStyleStrength
+        )
     }
 
     private static func isNonInputStatusMessage(_ text: String) -> Bool {

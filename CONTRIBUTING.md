@@ -119,7 +119,7 @@ Before release-oriented changes, verify:
 - Local model download, selection, deletion, and local-folder model import behave as expected.
 - Remote model add/edit/delete, API-key save, and validation behave as expected.
 - Vocabulary hints, punctuation style, filler-word removal, emotion softening, and output style affect correction as expected.
-- Correction Debug writes a local trace and exposes enough timing/output information for inspection.
+- Debug Model writes a local trace and exposes enough timing/output information for inspection.
 - Prompt Lab smoke tests pass for the affected prompt/model changes.
 - Empty recognition shows the no-text state instead of inserting a toast-like success state.
 - `Copy Last Transcript`, `Copy Login Debug Info`, `Open Log`, and `Copy Log Path` behave as expected.

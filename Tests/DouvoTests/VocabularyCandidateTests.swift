@@ -73,6 +73,20 @@ final class VocabularyCandidateTests: XCTestCase {
         )
     }
 
+    func testChineseVocabularyUsesPinyinNGramCandidate() {
+        let candidates = LocalLLMPostProcessor.correctionVocabularyCandidates(
+            for: "需要把这个光线主权限加到项目里",
+            vocabulary: "贡献者"
+        )
+
+        XCTAssertTrue(
+            candidates.contains { candidate in
+                candidate.source == "光线主" && candidate.target == "贡献者"
+            },
+            "Expected Chinese pinyin n-gram matching to map the ASR phrase to the user vocabulary phrase."
+        )
+    }
+
     func testEnglishNearSoundVocabularyIsPromptCandidate() {
         let candidates = LocalLLMPostProcessor.correctionVocabularyCandidates(
             for: "cloud code 这里的权限好像有问题",
@@ -148,6 +162,16 @@ final class VocabularyCandidateTests: XCTestCase {
         )
 
         XCTAssertEqual(fallback, "textarea 里面 placeholder 好像有问题")
+    }
+
+    func testChinesePinyinNGramVocabularyIsAppliedByFallback() {
+        let fallback = LocalLLMPostProcessor.fallbackCorrectionText(
+            for: "需要把这个光线主权限加到项目里",
+            vocabulary: "贡献者",
+            punctuationStyle: .complete
+        )
+
+        XCTAssertEqual(fallback, "需要把这个贡献者权限加到项目里")
     }
 
     func testDoesNotInventCandidatesWithoutVocabulary() {

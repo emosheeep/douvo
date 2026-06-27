@@ -29,6 +29,9 @@ enum AppLog {
 }
 
 private final class AppLogWriter: @unchecked Sendable {
+    private static let maxFileBytes: UInt64 = 1 * 1024 * 1024
+    private static let maxArchivedFiles = 3
+
     private let queue = DispatchQueue(label: "Douvo.AppLogWriter", qos: .utility)
     private let formatter = ISO8601DateFormatter()
     private var handle: FileHandle?
@@ -41,8 +44,9 @@ private final class AppLogWriter: @unchecked Sendable {
             print(line, terminator: "")
 
             guard let data = line.data(using: .utf8) else { return }
-            let handle = logHandle()
             do {
+                rotateIfNeeded(pendingByteCount: data.count)
+                let handle = logHandle()
                 try handle.seekToEnd()
                 try handle.write(contentsOf: data)
             } catch {
@@ -71,6 +75,71 @@ private final class AppLogWriter: @unchecked Sendable {
         handle = fallback
         isUsingFallbackHandle = true
         return fallback
+    }
+
+    private func rotateIfNeeded(pendingByteCount: Int) {
+        guard !isUsingFallbackHandle else { return }
+        let url = AppLog.fileURL
+        let size = fileSize(at: url)
+        guard size > 0, size + UInt64(pendingByteCount) > Self.maxFileBytes else { return }
+
+        closeHandle()
+        rotateFiles()
+    }
+
+    private func rotateFiles() {
+        let fileManager = FileManager.default
+
+        for index in stride(from: Self.maxArchivedFiles, through: 1, by: -1) {
+            let sourceURL = rotatedFileURL(index)
+            guard fileManager.fileExists(atPath: sourceURL.path) else { continue }
+
+            if index == Self.maxArchivedFiles {
+                try? fileManager.removeItem(at: sourceURL)
+            } else {
+                let destinationURL = rotatedFileURL(index + 1)
+                try? fileManager.removeItem(at: destinationURL)
+                try? fileManager.moveItem(at: sourceURL, to: destinationURL)
+            }
+        }
+
+        let currentURL = AppLog.fileURL
+        guard fileManager.fileExists(atPath: currentURL.path) else {
+            fileManager.createFile(atPath: currentURL.path, contents: nil)
+            return
+        }
+
+        if let data = tailData(from: currentURL) {
+            try? data.write(to: rotatedFileURL(1), options: .atomic)
+        }
+        try? fileManager.removeItem(at: currentURL)
+        fileManager.createFile(atPath: currentURL.path, contents: nil)
+    }
+
+    private func rotatedFileURL(_ index: Int) -> URL {
+        AppLog.directoryURL.appendingPathComponent("douvo.\(index).log")
+    }
+
+    private func fileSize(at url: URL) -> UInt64 {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        if let size = attributes?[.size] as? NSNumber {
+            return size.uint64Value
+        }
+        return 0
+    }
+
+    private func tailData(from url: URL) -> Data? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+
+        do {
+            let size = try handle.seekToEnd()
+            let readSize = min(size, Self.maxFileBytes)
+            try handle.seek(toOffset: size - readSize)
+            return try handle.read(upToCount: Int(readSize)) ?? Data()
+        } catch {
+            return nil
+        }
     }
 
     private func closeHandle() {

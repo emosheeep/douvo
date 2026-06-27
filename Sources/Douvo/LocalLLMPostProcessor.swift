@@ -243,13 +243,27 @@ struct LocalLLMGenerationProfile: Sendable {
     let maxTokens: Int?
 
     static var currentCorrection: LocalLLMGenerationProfile {
-        asrCorrection(reasoningMode: .disabled)
+        currentCorrection(for: "")
+    }
+
+    static func currentCorrection(for text: String) -> LocalLLMGenerationProfile {
+        asrCorrection(reasoningMode: .disabled, estimatedInputCharacters: text.count)
     }
 
     static func asrCorrection(reasoningMode: LocalLLMReasoningMode) -> LocalLLMGenerationProfile {
+        asrCorrection(reasoningMode: reasoningMode, estimatedInputCharacters: 0)
+    }
+
+    static func asrCorrection(
+        reasoningMode: LocalLLMReasoningMode,
+        estimatedInputCharacters: Int
+    ) -> LocalLLMGenerationProfile {
         LocalLLMGenerationProfile(
             reasoningMode: reasoningMode,
-            maxTokens: reasoningMode == .enabled ? 1536 : 96
+            maxTokens: correctionMaxTokens(
+                estimatedInputCharacters: estimatedInputCharacters,
+                minimum: reasoningMode == .enabled ? 1536 : 256
+            )
         )
     }
 
@@ -272,6 +286,14 @@ struct LocalLLMGenerationProfile: Sendable {
 
     var additionalContext: [String: any Sendable] {
         ["enable_thinking": reasoningMode.modelEnableThinking]
+    }
+
+    private static func correctionMaxTokens(
+        estimatedInputCharacters: Int,
+        minimum: Int
+    ) -> Int {
+        let scaledTokens = max(minimum, Int((Double(estimatedInputCharacters) * 1.5).rounded()))
+        return min(scaledTokens, 4096)
     }
 }
 
@@ -321,7 +343,8 @@ actor LocalLLMPostProcessor {
         requiresEnabled: Bool,
         promptConfiguration: LocalLLMPromptConfiguration? = nil,
         generationProfile: LocalLLMGenerationProfile? = nil,
-        savePromptSnapshot: Bool = true
+        savePromptSnapshot: Bool = true,
+        fallbackText: String? = nil
     ) async throws -> LocalLLMPostprocessResult {
         let totalStart = Self.now()
         let prepareStart = Self.now()
@@ -335,8 +358,9 @@ actor LocalLLMPostProcessor {
         )
 
         let input = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackRawText = fallbackText ?? rawText
         let promptConfiguration = promptConfiguration ?? .current
-        let generationProfile = generationProfile ?? .currentCorrection
+        let generationProfile = generationProfile ?? .currentCorrection(for: input)
         let settingsEnabled = Self.isEnabled
         let shouldRun = !requiresEnabled || settingsEnabled
         let punctuationStyle = promptConfiguration.punctuationStyle
@@ -364,7 +388,7 @@ actor LocalLLMPostProcessor {
             traceMetadata["outcome"] = "skipped"
             traceMetadata["reason"] = "empty_input"
             return LocalLLMPostprocessResult(
-                text: rawText,
+                text: fallbackRawText,
                 timings: timings,
                 metadata: traceMetadata,
                 debugInfo: debugInfo
@@ -372,7 +396,7 @@ actor LocalLLMPostProcessor {
         }
 
         guard shouldRun else {
-            let finalText = Self.applyPunctuationStyle(to: rawText, style: punctuationStyle)
+            let finalText = Self.applyPunctuationStyle(to: fallbackRawText, style: punctuationStyle)
             timings.append(TraceTiming(
                 name: "correction.prepare",
                 milliseconds: Self.milliseconds(since: prepareStart),
@@ -382,7 +406,7 @@ actor LocalLLMPostProcessor {
             traceMetadata["outcome"] = "skipped"
             traceMetadata["reason"] = "disabled"
             traceMetadata["output_chars"] = String(finalText.count)
-            traceMetadata["deterministic_punctuation_applied"] = String(finalText != rawText)
+            traceMetadata["deterministic_punctuation_applied"] = String(finalText != fallbackRawText)
             return LocalLLMPostprocessResult(
                 text: finalText,
                 timings: timings,
@@ -393,7 +417,7 @@ actor LocalLLMPostProcessor {
 
         if let runtimeUnavailableReason {
             let finalText = Self.fallbackText(
-                for: rawText,
+                for: fallbackRawText,
                 vocabulary: promptConfiguration.vocabulary,
                 punctuationStyle: punctuationStyle
             )
@@ -407,7 +431,7 @@ actor LocalLLMPostProcessor {
             traceMetadata["outcome"] = "skipped"
             traceMetadata["reason"] = "runtime_unavailable"
             traceMetadata["output_chars"] = String(finalText.count)
-            traceMetadata["deterministic_punctuation_applied"] = String(finalText != rawText)
+            traceMetadata["deterministic_punctuation_applied"] = String(finalText != fallbackRawText)
             return LocalLLMPostprocessResult(
                 text: finalText,
                 timings: timings,
@@ -422,7 +446,7 @@ actor LocalLLMPostProcessor {
 
         guard isDownloaded else {
             let finalText = Self.fallbackText(
-                for: rawText,
+                for: fallbackRawText,
                 vocabulary: promptConfiguration.vocabulary,
                 punctuationStyle: punctuationStyle
             )
@@ -431,7 +455,7 @@ actor LocalLLMPostProcessor {
             traceMetadata["outcome"] = "skipped"
             traceMetadata["reason"] = "model_not_downloaded"
             traceMetadata["output_chars"] = String(finalText.count)
-            traceMetadata["deterministic_punctuation_applied"] = String(finalText != rawText)
+            traceMetadata["deterministic_punctuation_applied"] = String(finalText != fallbackRawText)
             return LocalLLMPostprocessResult(
                 text: finalText,
                 timings: timings,
@@ -459,7 +483,12 @@ actor LocalLLMPostProcessor {
                 cleanedResponse: nil
             )
             if savePromptSnapshot {
-                await PromptSnapshotStore.shared.saveIfChanged(systemPrompt: instructions, userPrompt: userPrompt)
+                if let snapshotURL = await PromptSnapshotStore.shared.saveIfChanged(
+                    systemPrompt: instructions,
+                    userPrompt: userPrompt
+                ) {
+                    traceMetadata["prompt_snapshot_path"] = snapshotURL.path
+                }
             }
             let session = ChatSession(
                 container,
@@ -513,7 +542,7 @@ actor LocalLLMPostProcessor {
             )
             guard Self.isUsableCorrection(cleaned, original: input) else {
                 let finalText = Self.fallbackText(
-                    for: rawText,
+                    for: fallbackRawText,
                     vocabulary: promptConfiguration.vocabulary,
                     punctuationStyle: punctuationStyle
                 )
@@ -566,7 +595,7 @@ actor LocalLLMPostProcessor {
             )
         } catch {
             let finalText = Self.fallbackText(
-                for: rawText,
+                for: fallbackRawText,
                 vocabulary: promptConfiguration.vocabulary,
                 punctuationStyle: punctuationStyle
             )
@@ -575,7 +604,7 @@ actor LocalLLMPostProcessor {
             traceMetadata["outcome"] = "failed"
             traceMetadata["error"] = error.localizedDescription
             traceMetadata["output_chars"] = String(finalText.count)
-            traceMetadata["deterministic_punctuation_applied"] = String(finalText != rawText)
+            traceMetadata["deterministic_punctuation_applied"] = String(finalText != fallbackRawText)
             AppLog.error("Local LLM postprocess failed; using deterministic fallback error=\(error.localizedDescription)")
             return LocalLLMPostprocessResult(
                 text: finalText,
@@ -1198,23 +1227,61 @@ actor LocalLLMPostProcessor {
     private static func chineseVocabularyMatches(for phrase: String, in text: String) -> [String] {
         let phrasePinyin = pinyinKey(for: phrase)
         guard !phrasePinyin.isEmpty else { return [] }
+        let phraseCharacterCount = cjkCharacterCount(in: phrase)
+        guard phraseCharacterCount >= 2, phraseCharacterCount <= chinesePinyinMaximumWindowSize else { return [] }
 
         var matches: [String] = []
-        var index = text.startIndex
-        while index < text.endIndex {
-            guard let end = text.index(index, offsetBy: phrase.count, limitedBy: text.endIndex) else {
-                break
-            }
+        var seen = Set<String>()
+        for tokenRange in cjkTokenRanges(in: text) {
+            let token = String(text[tokenRange])
+            let characters = Array(token)
+            var startIndex = 0
 
-            let candidate = String(text[index..<end])
-            if candidate != phrase,
-               candidate.unicodeScalars.contains(where: isCJKScalar),
-               isNearPinyin(candidate, phrasePinyin: phrasePinyin) {
-                matches.append(candidate)
+            while startIndex < characters.count {
+                var matched = false
+                let maxWindow = min(chinesePinyinMaximumWindowSize, characters.count - startIndex)
+
+                for windowSize in chinesePinyinWindowSizes(
+                    upTo: maxWindow,
+                    preferredSize: phraseCharacterCount
+                ) {
+                    let candidate = String(characters[startIndex..<(startIndex + windowSize)])
+                    guard candidate != phrase,
+                          isNearPinyin(
+                              candidate,
+                              phrasePinyin: phrasePinyin,
+                              phraseCharacterCount: phraseCharacterCount
+                          )
+                    else {
+                        continue
+                    }
+
+                    if !seen.contains(candidate) {
+                        seen.insert(candidate)
+                        matches.append(candidate)
+                    }
+                    startIndex += windowSize
+                    matched = true
+                    break
+                }
+
+                if !matched {
+                    startIndex += 1
+                }
             }
-            index = text.index(after: index)
         }
         return matches
+    }
+
+    private static func chinesePinyinWindowSizes(upTo maxWindow: Int, preferredSize: Int) -> [Int] {
+        Array(1...maxWindow).sorted { lhs, rhs in
+            let lhsDistance = abs(lhs - preferredSize)
+            let rhsDistance = abs(rhs - preferredSize)
+            if lhsDistance != rhsDistance {
+                return lhsDistance < rhsDistance
+            }
+            return lhs > rhs
+        }
     }
 
     private static func latinVocabularyTokens(in text: String) -> [String] {
@@ -1460,11 +1527,38 @@ actor LocalLLMPostProcessor {
         }
     }
 
-    private static func isNearPinyin(_ candidate: String, phrasePinyin: String) -> Bool {
+    private static func isNearPinyin(
+        _ candidate: String,
+        phrasePinyin: String,
+        phraseCharacterCount: Int
+    ) -> Bool {
+        let candidateCharacterCount = cjkCharacterCount(in: candidate)
+        let allowedCharacterDifference = phraseCharacterCount <= 2 ? 0 : 1
+        guard candidateCharacterCount >= 2,
+              candidateCharacterCount <= chinesePinyinMaximumWindowSize,
+              abs(candidateCharacterCount - phraseCharacterCount) <= allowedCharacterDifference
+        else {
+            return false
+        }
+
         let candidatePinyin = pinyinKey(for: candidate)
         guard !candidatePinyin.isEmpty else { return false }
         let distance = levenshteinDistance(candidatePinyin, phrasePinyin)
-        return distance <= max(1, phrasePinyin.count / 4)
+        return distance <= chinesePinyinDistanceLimit(
+            candidatePinyin: candidatePinyin,
+            phrasePinyin: phrasePinyin
+        )
+    }
+
+    private static func chinesePinyinDistanceLimit(
+        candidatePinyin: String,
+        phrasePinyin: String
+    ) -> Int {
+        let maxLength = max(candidatePinyin.count, phrasePinyin.count)
+        guard maxLength >= 9 else {
+            return max(1, maxLength / 4)
+        }
+        return max(1, Int((Double(maxLength) * 0.25).rounded(.up)))
     }
 
     private static func pinyinKey(for text: String) -> String {
@@ -1507,6 +1601,12 @@ actor LocalLLMPostProcessor {
         (0x4E00...0x9FFF).contains(Int(scalar.value))
     }
 
+    private static func cjkCharacterCount(in text: String) -> Int {
+        text.reduce(0) { count, character in
+            character.unicodeScalars.contains(where: isCJKScalar) ? count + 1 : count
+        }
+    }
+
     private static func applyPunctuationStyle(
         to text: String,
         style: PunctuationStyle
@@ -1518,6 +1618,8 @@ actor LocalLLMPostProcessor {
             return removeFinalPunctuation(from: text)
         case .spaces:
             return replacePunctuationWithSpaces(in: text)
+        case .questionMarksOnly:
+            return keepQuestionMarksOnly(in: text)
         }
     }
 
@@ -1538,6 +1640,40 @@ actor LocalLLMPostProcessor {
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+    }
+
+    private static func keepQuestionMarksOnly(in text: String) -> String {
+        let characters = Array(text)
+        let replaced = characters.indices.map { index in
+            let character = characters[index]
+            if questionMarkCharacters.contains(character) {
+                return String(character)
+            }
+            if character == "." {
+                return shouldPreserveDot(in: characters, at: index) ? "." : " "
+            }
+            return removablePunctuationCharacters.contains(character) ? " " : String(character)
+        }.joined()
+        return normalizeSpacingAroundQuestionMarks(in: replaced)
+    }
+
+    private static func shouldPreserveDot(in characters: [Character], at index: Int) -> Bool {
+        guard index > characters.startIndex,
+              index < characters.index(before: characters.endIndex)
+        else {
+            return false
+        }
+        return isASCIIAlphanumeric(characters[characters.index(before: index)])
+            && isASCIIAlphanumeric(characters[characters.index(after: index)])
+    }
+
+    private static func normalizeSpacingAroundQuestionMarks(in text: String) -> String {
+        text
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .replacingOccurrences(of: " ?", with: "?")
+            .replacingOccurrences(of: " ？", with: "？")
     }
 
     private static func cleanResponse(_ response: String) -> String {
@@ -1631,6 +1767,7 @@ actor LocalLLMPostProcessor {
         let lowercasedOutput = output.lowercased()
         guard !blockedResponsePrefixes.contains(where: { lowercasedOutput.hasPrefix($0) }) else { return false }
         guard !blockedResponseFragments.contains(where: { lowercasedOutput.contains($0) }) else { return false }
+        guard !looksLikeMixPromptLeak(lowercasedOutput) else { return false }
         return true
     }
 
@@ -1675,6 +1812,28 @@ actor LocalLLMPostProcessor {
         "中置信度"
     ]
 
+    private static func looksLikeMixPromptLeak(_ lowercasedOutput: String) -> Bool {
+        let directInstructionMarkers = [
+            "本次语音输入有两路 asr 识别结果",
+            "请综合两路信号",
+            "两路内容可能有重叠",
+            "双路 asr 输入"
+        ]
+        if directInstructionMarkers.contains(where: { lowercasedOutput.contains($0) }) {
+            return true
+        }
+
+        let hasResultOne = lowercasedOutput.contains("识别结果一")
+        let hasResultTwo = lowercasedOutput.contains("识别结果二")
+        if hasResultOne && hasResultTwo {
+            return true
+        }
+
+        let hasProviderLabel = lowercasedOutput.contains("doubao web")
+            || lowercasedOutput.contains("doubao android")
+        return hasProviderLabel && (hasResultOne || hasResultTwo)
+    }
+
     private static func now() -> TimeInterval {
         ProcessInfo.processInfo.systemUptime
     }
@@ -1691,7 +1850,10 @@ actor LocalLLMPostProcessor {
 
     private static let finalPunctuationCharacters = Set<Character>("。！？.!?")
     private static let spaceReplacementPunctuationCharacters = Set<Character>("。！？；，、：；!?;,")
+    private static let questionMarkCharacters = Set<Character>("？?")
+    private static let removablePunctuationCharacters = Set<Character>("。！，、；：；!;,")
     private static let codeVocabularySeparators = Set<Character>("./_-")
+    private static let chinesePinyinMaximumWindowSize = 4
 }
 
 private enum PromptTemplateRenderer {

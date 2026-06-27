@@ -149,7 +149,7 @@ open /Applications/Douvo.app
 - 选择 **Remote** 添加 provider、base URL、model name 和 API key。
 - 添加用户词库，覆盖项目术语、文件路径、产品名称和常见 ASR 错词。
 - 配置标点、去水词、情绪弱化和输出风格。
-- 使用 Correction Debug 测试一段输入，并查看本地 trace。
+- 使用 Debug Model 测试一段输入，并查看本地 trace。
 
 ## 参考项目
 
@@ -161,13 +161,23 @@ open /Applications/Douvo.app
   - 通过原生 WebSocket 连接豆包 Web ASR。
   - 16 kHz PCM 音频流和结束帧行为。
   - macOS 菜单栏语音输入交互。
+- [EvanDbg/doubao-ime-win](https://github.com/EvanDbg/doubao-ime-win)
+  - 豆包输入法 Android 客户端协议参考。
+  - 设备注册和 ASR token 获取流程。
+  - 基于 Protobuf 的 ASR WebSocket task/session 消息。
+  - Android 输入法 ASR 路径使用的 16 kHz Opus 音频分帧。
 - [Open-Less/openless](https://github.com/Open-Less/openless)
   - 面向当前光标位置的全局语音输入产品方向。
   - 菜单栏 / 托盘式语音输入工作流。
   - Settings 与 Diagnose 的组织方式。
   - 文本插入可靠性思路，包括粘贴 fallback 和剪贴板恢复。
+- [cjpais/Handy](https://github.com/cjpais/Handy)
+  - 离线语音输入应用架构和录音管线参考。
+  - 带 pre-roll、onset 和 hangover 平滑的 VAD 设计。
+  - 后处理工作流思路，包括结构化输出和关闭 reasoning。
+  - 语音输入应用中的模型、历史记录和诊断组织方式。
 
-本仓库没有 vendoring 这两个项目。它们的代码和 license 仍归各自作者所有。
+本仓库没有 vendoring 这些项目。它们的代码和 license 仍归各自作者所有。
 
 ## Contributing
 

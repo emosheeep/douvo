@@ -4,7 +4,8 @@ actor PromptSnapshotStore {
     static let shared = PromptSnapshotStore()
 
     private var lastSignature: String?
-    private let maxSnapshots = 3
+    private var lastSnapshotURL: URL?
+    private let maxSnapshots = 10
 
     private var directoryURL: URL {
         let directory = AppLog.directoryURL.appendingPathComponent("PromptSnapshots", isDirectory: true)
@@ -12,10 +13,11 @@ actor PromptSnapshotStore {
         return directory
     }
 
-    func saveIfChanged(systemPrompt: String, userPrompt: String) {
+    @discardableResult
+    func saveIfChanged(systemPrompt: String, userPrompt: String) -> URL? {
         let signature = "\(systemPrompt)\n\u{1E}\n\(userPrompt)"
         guard signature != lastSignature else {
-            return
+            return lastSnapshotURL
         }
         lastSignature = signature
 
@@ -33,10 +35,13 @@ actor PromptSnapshotStore {
 
         do {
             try content.write(to: fileURL, atomically: true, encoding: .utf8)
+            lastSnapshotURL = fileURL
             pruneSnapshots()
             AppLog.info("Local LLM prompt snapshot saved path=\(fileURL.path)")
+            return fileURL
         } catch {
             AppLog.error("Local LLM prompt snapshot failed error=\(error.localizedDescription)")
+            return nil
         }
     }
 

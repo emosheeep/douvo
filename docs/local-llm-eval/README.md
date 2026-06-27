@@ -12,7 +12,7 @@ Useful config fields:
 
 - `model`: a built-in model raw value such as `light`, `qwen35EightBit08B`, `qwen35EightBit2B`, or `quality`, or a local MLX model folder path.
 - `runs`: repeat count per input.
-- `punctuationStyle`: `complete`, `omitFinal`, or `spaces`.
+- `punctuationStyle`: `complete`, `omitFinal`, `spaces`, or `questionMarksOnly`.
 - `removeFillerWords`: `true` to enable the `{{#if remove_filler_words}}` template branch.
 - `softenEmotionalLanguage`: `true` to enable the `{{#if soften_emotional_language}}` template branch.
 - `outputStyle`: `original`, `natural`, or `concise`. `original` leaves `{{#if output_style_instruction}}` empty.

@@ -4,7 +4,7 @@ final class RecentAudioRecorder {
     private static let sampleRate = 16_000
     private static let channelCount = 1
     private static let bitsPerSample = 16
-    private static let maxRecordingCount = 3
+    private static let maxRecordingCount = 10
 
     private let lock = NSLock()
     private let fileURL: URL
@@ -47,11 +47,11 @@ final class RecentAudioRecorder {
         }
     }
 
-    func finish() {
+    func finish() -> URL? {
         lock.lock()
         guard !isFinished else {
             lock.unlock()
-            return
+            return nil
         }
         isFinished = true
         let byteCount = audioByteCount
@@ -62,7 +62,7 @@ final class RecentAudioRecorder {
                 try handle.close()
                 try? FileManager.default.removeItem(at: fileURL)
                 AppLog.info("Audio debug recording discarded empty path=\(fileURL.path)")
-                return
+                return nil
             }
 
             try handle.seek(toOffset: 0)
@@ -70,9 +70,11 @@ final class RecentAudioRecorder {
             try handle.close()
             Self.pruneOldRecordings()
             AppLog.info("Audio debug recording saved path=\(fileURL.path) bytes=\(byteCount)")
+            return fileURL
         } catch {
             try? handle.close()
             AppLog.error("Audio debug recording finish failed path=\(fileURL.path) error=\(error.localizedDescription)")
+            return nil
         }
     }
 

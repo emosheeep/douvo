@@ -149,7 +149,7 @@ Open **Settings... -> Correction** to configure transcript post-processing:
 - Choose **Remote** to add a provider, base URL, model name, and API key.
 - Add vocabulary hints for project terms, file paths, product names, and common ASR mistakes.
 - Tune punctuation, filler-word removal, emotion softening, and output style.
-- Use Correction Debug to test a sample input and inspect the local trace.
+- Use Debug Model to test a sample input and inspect the local trace.
 
 ## References
 
@@ -161,13 +161,23 @@ This project was built with reference to these open-source projects:
   - Native WebSocket access to Doubao Web ASR.
   - 16 kHz PCM audio streaming and finish-frame behavior.
   - Menu bar voice-input interaction on macOS.
+- [EvanDbg/doubao-ime-win](https://github.com/EvanDbg/doubao-ime-win)
+  - Doubao IME Android client protocol reference.
+  - Device registration and ASR token retrieval flow.
+  - Protobuf-based ASR WebSocket task/session messages.
+  - 16 kHz Opus audio framing for the Android IME ASR path.
 - [Open-Less/openless](https://github.com/Open-Less/openless)
   - Product direction for app-agnostic voice input at the current cursor.
   - Menu bar / tray voice-input workflow.
   - Settings and diagnostics organization.
   - Text insertion reliability ideas, including paste fallback and clipboard restoration.
+- [cjpais/Handy](https://github.com/cjpais/Handy)
+  - Offline speech-to-text app architecture and recording pipeline reference.
+  - Voice activity detection design with pre-roll, onset, and hangover smoothing.
+  - Post-processing workflow ideas, including structured output and reasoning suppression.
+  - Model, history, and diagnostics organization for a voice-input app.
 
-This repository does not vendor either project. Their code and licenses remain owned by their respective authors.
+This repository does not vendor these projects. Their code and licenses remain owned by their respective authors.
 
 ## Contributing
 

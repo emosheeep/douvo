@@ -28,12 +28,19 @@ final class DoubaoASRClient: NSObject, URLSessionWebSocketDelegate, @unchecked S
     private var sentAudioCount = 0
     private var completedSendCount = 0
     private var receivedMessageCount = 0
+    private var resultMessageCount = 0
     private var openCallbackSent = false
+    private var summaryLogged = false
+    private var bufferedAudioSamples: [String] = []
+    private var queuedAudioSamples: [String] = []
+    private var completedSendSamples: [String] = []
+    private var resultMessageSamples: [String] = []
     private var connectionTimeout: DispatchWorkItem?
     private let lock = NSLock()
+    private static let maxSummarySamples = 12
 
     var onOpen: (() -> Void)?
-    var onResult: ((String) -> Void)?
+    var onResult: ((ASRRecognitionResult) -> Void)?
     var onFinish: (() -> Void)?
     var onError: ((Error?) -> Void)?
     var onAuthError: (() -> Void)?
@@ -87,7 +94,13 @@ final class DoubaoASRClient: NSObject, URLSessionWebSocketDelegate, @unchecked S
         sentAudioCount = 0
         completedSendCount = 0
         receivedMessageCount = 0
+        resultMessageCount = 0
         openCallbackSent = false
+        summaryLogged = false
+        bufferedAudioSamples.removeAll(keepingCapacity: true)
+        queuedAudioSamples.removeAll(keepingCapacity: true)
+        completedSendSamples.removeAll(keepingCapacity: true)
+        resultMessageSamples.removeAll(keepingCapacity: true)
         state = .connecting
         lock.unlock()
         socket.resume()
@@ -117,21 +130,21 @@ final class DoubaoASRClient: NSObject, URLSessionWebSocketDelegate, @unchecked S
             sentAudioCount += 1
             let queuedCount = queuedAudio.count
             let count = sentAudioCount
+            if Self.shouldSampleProgress(count) {
+                Self.appendSummarySample("\(count):queued=\(queuedCount):bytes=\(data.count)", to: &queuedAudioSamples)
+            }
             let shouldStartSending = !isSendingAudio
             lock.unlock()
-            if count == 1 || count % 50 == 0 {
-                AppLog.info("ASR audio queued count=\(count) queued=\(queuedCount) bytes=\(data.count)")
-            }
             if shouldStartSending {
                 sendNextAudio()
             }
         } else if state == .connecting {
             pendingAudio.append(data)
             let pendingCount = pendingAudio.count
-            lock.unlock()
-            if pendingCount == 1 || pendingCount % 50 == 0 {
-                AppLog.info("ASR audio buffered pending=\(pendingCount) bytes=\(data.count)")
+            if Self.shouldSampleProgress(pendingCount) {
+                Self.appendSummarySample("\(pendingCount):bytes=\(data.count)", to: &bufferedAudioSamples)
             }
+            lock.unlock()
         } else {
             let currentState = state
             lock.unlock()
@@ -172,6 +185,7 @@ final class DoubaoASRClient: NSObject, URLSessionWebSocketDelegate, @unchecked S
         task?.cancel(with: .normalClosure, reason: "1000-".data(using: .utf8))
         task = nil
         AppLog.info("ASR disconnected pendingDropped=\(pendingCount) queuedDropped=\(queuedCount) sentAudioCount=\(sentAudioCount)")
+        logSummary(reason: "disconnect")
     }
 
     private func markOpen(reason: String) {
@@ -280,12 +294,12 @@ final class DoubaoASRClient: NSObject, URLSessionWebSocketDelegate, @unchecked S
             self.lock.lock()
             self.completedSendCount += 1
             let completedCount = self.completedSendCount
+            if Self.shouldSampleProgress(completedCount) {
+                Self.appendSummarySample("\(completedCount)", to: &self.completedSendSamples)
+            }
             self.isSendingAudio = false
             self.lock.unlock()
 
-            if completedCount == 1 || completedCount % 50 == 0 {
-                AppLog.info("ASR audio send completed count=\(completedCount)")
-            }
             self.cancelConnectionTimeout()
             self.sendNextAudio()
         }
@@ -298,6 +312,7 @@ final class DoubaoASRClient: NSObject, URLSessionWebSocketDelegate, @unchecked S
             if let error {
                 self?.markFailed()
                 AppLog.error("ASR finish frame send failed error=\(error.localizedDescription)")
+                self?.logSummary(reason: "finish_frame_failed")
             } else {
                 AppLog.info("ASR finish frame sent completedSendCount=\(completedCount) sentAudioCount=\(totalCount)")
             }
@@ -330,11 +345,14 @@ final class DoubaoASRClient: NSObject, URLSessionWebSocketDelegate, @unchecked S
                 let failure = self.receiveFailureContext(for: error)
                 if failure.shouldSuppress {
                     AppLog.info("ASR receive ended state=\(failure.state.rawValue) error=\(error.localizedDescription)")
+                    self.logSummary(reason: "receive_ended")
                 } else if failure.wasOpen {
                     AppLog.error("ASR receive failed error=\(error.localizedDescription)")
+                    self.logSummary(reason: "receive_failed")
                     self.onError?(error)
                 } else {
                     AppLog.error("ASR receive failed before open error=\(error.localizedDescription)")
+                    self.logSummary(reason: "receive_failed_before_open")
                     self.onError?(error)
                 }
             }
@@ -351,8 +369,16 @@ final class DoubaoASRClient: NSObject, URLSessionWebSocketDelegate, @unchecked S
         let code = json["code"] as? Int ?? 0
         let event = json["event"] as? String ?? ""
         let message = (json["message"] as? String ?? "").lowercased()
+        lock.lock()
         let receivedCount = receivedMessageCount
-        if event != "result" || receivedCount == 1 || receivedCount % 50 == 0 {
+        if event == "result" {
+            resultMessageCount += 1
+            if Self.shouldSampleProgress(resultMessageCount) {
+                Self.appendSummarySample("\(receivedCount):code=\(code)", to: &resultMessageSamples)
+            }
+        }
+        lock.unlock()
+        if event != "result" {
             AppLog.info("ASR message count=\(receivedCount) event=\(event) code=\(code)")
         }
 
@@ -360,6 +386,7 @@ final class DoubaoASRClient: NSObject, URLSessionWebSocketDelegate, @unchecked S
             if code == 709599054 || message.contains("auth") || message.contains("login") || message.contains("session") || message.contains("cookie") {
                 markFailed()
                 AppLog.error("ASR auth-like error code=\(code) message=\(message)")
+                logSummary(reason: "auth_error")
                 onAuthError?()
                 return
             }
@@ -370,10 +397,11 @@ final class DoubaoASRClient: NSObject, URLSessionWebSocketDelegate, @unchecked S
            let result = json["result"] as? [String: Any],
            let text = result["Text"] as? String,
            !text.isEmpty {
-            onResult?(text)
+            onResult?(.web(text))
         } else if event == "finish" {
             markFinished()
             AppLog.info("ASR finish received")
+            logSummary(reason: "finish")
             onFinish?()
         }
     }
@@ -446,5 +474,45 @@ final class DoubaoASRClient: NSObject, URLSessionWebSocketDelegate, @unchecked S
             state = .disconnected
         }
         lock.unlock()
+        logSummary(reason: "socket_closed")
+    }
+
+    private func logSummary(reason: String) {
+        lock.lock()
+        guard !summaryLogged else {
+            lock.unlock()
+            return
+        }
+        summaryLogged = true
+        let state = state.rawValue
+        let pendingCount = pendingAudio.count
+        let queuedCount = queuedAudio.count
+        let sentCount = sentAudioCount
+        let completedCount = completedSendCount
+        let receivedCount = receivedMessageCount
+        let resultCount = resultMessageCount
+        let bufferedSamples = Self.formatSamples(bufferedAudioSamples)
+        let queuedSamples = Self.formatSamples(queuedAudioSamples)
+        let completedSamples = Self.formatSamples(completedSendSamples)
+        let resultSamples = Self.formatSamples(resultMessageSamples)
+        lock.unlock()
+
+        AppLog.info("ASR summary reason=\(reason) state=\(state) pending=\(pendingCount) queued=\(queuedCount) sentAudio=\(sentCount) completedSends=\(completedCount) receivedMessages=\(receivedCount) resultMessages=\(resultCount) bufferedSamples=\(bufferedSamples) queuedSamples=\(queuedSamples) completedSamples=\(completedSamples) resultSamples=\(resultSamples)")
+    }
+
+    private static func shouldSampleProgress(_ count: Int) -> Bool {
+        count == 1 || count % 50 == 0
+    }
+
+    private static func appendSummarySample(_ sample: String, to samples: inout [String]) {
+        if samples.count < Self.maxSummarySamples {
+            samples.append(sample)
+        } else {
+            samples[Self.maxSummarySamples - 1] = "...\(sample)"
+        }
+    }
+
+    private static func formatSamples(_ samples: [String]) -> String {
+        "[\(samples.joined(separator: ","))]"
     }
 }

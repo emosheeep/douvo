@@ -7,6 +7,10 @@ import SwiftUI
 @main
 struct DouvoMain {
     static func main() {
+        if let traceURL = TraceReplayCommand.traceURL(from: CommandLine.arguments) {
+            runTraceReplayAndExit(traceURL: traceURL)
+        }
+
         if let configURL = PromptLabCommand.configURL(from: CommandLine.arguments) {
             runPromptLabAndExit(configURL: configURL)
         }
@@ -21,6 +25,15 @@ struct DouvoMain {
     private static func runPromptLabAndExit(configURL: URL) -> Never {
         Task {
             let exitCode = await PromptLabCommand.run(configURL: configURL)
+            exit(exitCode)
+        }
+
+        dispatchMain()
+    }
+
+    private static func runTraceReplayAndExit(traceURL: URL) -> Never {
+        Task {
+            let exitCode = await TraceReplayCommand.run(traceURL: traceURL)
             exit(exitCode)
         }
 
@@ -186,13 +199,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let menu = statusItem.menu else { return }
         menu.removeAllItems()
 
-        switch appState.loginStatus {
-        case .checking:
-            menu.addItem(disabledItem("Checking login..."))
-        case .loggedIn:
-            menu.addItem(disabledItem("Logged in"))
-        case .notLoggedIn:
-            menu.addItem(NSMenuItem(title: "Log In", action: #selector(showLogin), keyEquivalent: "l"))
+        switch ASRProviderStore.selected {
+        case .web:
+            switch appState.loginStatus {
+            case .checking:
+                menu.addItem(disabledItem("Checking login..."))
+            case .loggedIn:
+                menu.addItem(disabledItem("Web ASR logged in"))
+            case .notLoggedIn:
+                menu.addItem(NSMenuItem(title: "Log In", action: #selector(showLogin), keyEquivalent: "l"))
+            }
+        case .android:
+            menu.addItem(disabledItem("Android ASR"))
+        case .mix:
+            switch appState.loginStatus {
+            case .checking:
+                menu.addItem(disabledItem("Checking login..."))
+            case .loggedIn:
+                menu.addItem(disabledItem("Mix ASR ready"))
+            case .notLoggedIn:
+                menu.addItem(NSMenuItem(title: "Log In", action: #selector(showLogin), keyEquivalent: "l"))
+            }
         }
         let copyItem = NSMenuItem(title: "Copy Last Transcript", action: #selector(copyLastTranscript), keyEquivalent: "c")
         copyItem.isEnabled = !appState.lastTranscript.isEmpty
@@ -259,6 +286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             appVersion: appVersion,
             microphoneDevices: microphoneDevices,
             selectedMicrophoneUID: selectedUID,
+            selectedASRProvider: ASRProviderStore.selected,
             onCapture: { [weak self] slot, shortcut in
                 guard let self else { return false }
                 let accepted: Bool
@@ -294,6 +322,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             },
             onSelectMicrophone: { uid in
                 AudioDeviceStore.setSelectedUID(uid)
+            },
+            onSelectASRProvider: { [weak self] provider in
+                ASRProviderStore.selected = provider
+                self?.settingsPanel.refreshLoginStatus(self?.appState.loginStatus ?? .notLoggedIn)
+                self?.rebuildMenu()
             },
             onDownloadLocalLLMModel: { model, onProgress in
                 try await LocalLLMPostProcessor.shared.preload(model, onProgress: onProgress)
@@ -394,7 +427,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func copyLoginDebugInfo() {
-        guard let debugInfo = ASRParamsStore.loginDebugInfo() else { return }
+        let debugInfo: String?
+        switch ASRProviderStore.selected {
+        case .web:
+            debugInfo = ASRParamsStore.loginDebugInfo()
+        case .android:
+            debugInfo = DoubaoAndroidCredentialStore.debugInfo()
+        case .mix:
+            debugInfo = [
+                ASRParamsStore.loginDebugInfo(),
+                DoubaoAndroidCredentialStore.debugInfo()
+            ]
+            .compactMap { $0 }
+            .joined(separator: "\n\n")
+        }
+        guard let debugInfo else { return }
         PasteHelper.copyOnly(debugInfo)
     }
 
@@ -418,8 +465,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func handleAuthExpired() {
-        appState.loginStatus = .notLoggedIn
+        if ASRProviderStore.selected.usesWebASR {
+            appState.loginStatus = .notLoggedIn
+            webViewManager.showLoginWindow()
+        }
         rebuildMenu()
-        webViewManager.showLoginWindow()
     }
 }

@@ -4,6 +4,7 @@ enum PunctuationStyle: String, CaseIterable, Identifiable, Sendable {
     case complete
     case omitFinal
     case spaces
+    case questionMarksOnly
 
     var id: String { rawValue }
 
@@ -15,6 +16,8 @@ enum PunctuationStyle: String, CaseIterable, Identifiable, Sendable {
             "Omit Final Punctuation"
         case .spaces:
             "Use Spaces Instead"
+        case .questionMarksOnly:
+            "Question Marks Only"
         }
     }
 
@@ -26,6 +29,8 @@ enum PunctuationStyle: String, CaseIterable, Identifiable, Sendable {
             "omit_final_punctuation"
         case .spaces:
             "spaces_instead_of_punctuation"
+        case .questionMarksOnly:
+            "question_marks_only"
         }
     }
 
@@ -37,6 +42,8 @@ enum PunctuationStyle: String, CaseIterable, Identifiable, Sendable {
             "添加必要的句中标点和分句，但最终输出末尾不要保留句号、问号、感叹号或英文句末标点。"
         case .spaces:
             "尽量不用标点表达停顿；需要分隔语义时用单个空格代替标点。不要破坏 URL、文件路径、版本号、代码、变量名或英文缩写。"
+        case .questionMarksOnly:
+            "只保留问句的问号；其它标点尽量不用，需要分隔语义时用单个空格。不要破坏 URL、文件路径、版本号、代码、变量名或英文缩写。"
         }
     }
 }

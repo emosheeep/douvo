@@ -398,7 +398,8 @@ actor CorrectionPostProcessor {
         backend: CorrectionBackend? = nil,
         localModel: LocalLLMModel? = nil,
         promptConfiguration: LocalLLMPromptConfiguration? = nil,
-        generationProfile: LocalLLMGenerationProfile? = nil
+        generationProfile: LocalLLMGenerationProfile? = nil,
+        fallbackText: String? = nil
     ) async throws -> LocalLLMPostprocessResult {
         let selectedBackend = backend ?? CorrectionSettingsStore.backend
         switch selectedBackend {
@@ -408,7 +409,8 @@ actor CorrectionPostProcessor {
                 model: localModel ?? LocalLLMPostProcessor.configuredModel,
                 requiresEnabled: requiresEnabled,
                 promptConfiguration: promptConfiguration,
-                generationProfile: generationProfile
+                generationProfile: generationProfile,
+                fallbackText: fallbackText
             )
         case .remote:
             return try await RemoteLLMPostProcessor.shared.correctedTextWithTrace(
@@ -416,7 +418,8 @@ actor CorrectionPostProcessor {
                 requiresEnabled: requiresEnabled,
                 configuration: RemoteLLMSettingsStore.currentConfiguration,
                 promptConfiguration: promptConfiguration,
-                generationProfile: generationProfile
+                generationProfile: generationProfile,
+                fallbackText: fallbackText
             )
         }
     }
@@ -449,7 +452,8 @@ actor RemoteLLMPostProcessor {
         configuration: RemoteLLMConfiguration,
         promptConfiguration: LocalLLMPromptConfiguration? = nil,
         generationProfile: LocalLLMGenerationProfile? = nil,
-        savePromptSnapshot: Bool = true
+        savePromptSnapshot: Bool = true,
+        fallbackText: String? = nil
     ) async throws -> LocalLLMPostprocessResult {
         let totalStart = Self.now()
         let prepareStart = Self.now()
@@ -463,8 +467,9 @@ actor RemoteLLMPostProcessor {
         )
 
         let input = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackRawText = fallbackText ?? rawText
         let promptConfiguration = promptConfiguration ?? .current
-        let generationProfile = generationProfile ?? .currentCorrection
+        let generationProfile = generationProfile ?? .currentCorrection(for: input)
         let settingsEnabled = LocalLLMPostProcessor.isCorrectionEnabled
         let shouldRun = !requiresEnabled || settingsEnabled
         let punctuationStyle = promptConfiguration.punctuationStyle
@@ -494,12 +499,12 @@ actor RemoteLLMPostProcessor {
             timings.append(TraceTiming(name: "correction.total", milliseconds: Self.milliseconds(since: totalStart)))
             metadata["outcome"] = "skipped"
             metadata["reason"] = "empty_input"
-            return LocalLLMPostprocessResult(text: rawText, timings: timings, metadata: metadata, debugInfo: debugInfo)
+            return LocalLLMPostprocessResult(text: fallbackRawText, timings: timings, metadata: metadata, debugInfo: debugInfo)
         }
 
         guard shouldRun else {
             let finalText = LocalLLMPostProcessor.fallbackCorrectionText(
-                for: rawText,
+                for: fallbackRawText,
                 vocabulary: "",
                 punctuationStyle: punctuationStyle
             )
@@ -517,7 +522,7 @@ actor RemoteLLMPostProcessor {
 
         guard configuration.isConfigured else {
             let finalText = LocalLLMPostProcessor.fallbackCorrectionText(
-                for: rawText,
+                for: fallbackRawText,
                 vocabulary: promptConfiguration.vocabulary,
                 punctuationStyle: punctuationStyle
             )
@@ -552,7 +557,12 @@ actor RemoteLLMPostProcessor {
                 cleanedResponse: nil
             )
             if savePromptSnapshot {
-                await PromptSnapshotStore.shared.saveIfChanged(systemPrompt: instructions, userPrompt: userPrompt)
+                if let snapshotURL = await PromptSnapshotStore.shared.saveIfChanged(
+                    systemPrompt: instructions,
+                    userPrompt: userPrompt
+                ) {
+                    metadata["prompt_snapshot_path"] = snapshotURL.path
+                }
             }
             timings.append(TraceTiming(
                 name: "correction.build_prompt",
@@ -595,7 +605,7 @@ actor RemoteLLMPostProcessor {
             )
             guard LocalLLMPostProcessor.isUsableCorrection(cleaned, original: input) else {
                 let finalText = LocalLLMPostProcessor.fallbackCorrectionText(
-                    for: rawText,
+                    for: fallbackRawText,
                     vocabulary: promptConfiguration.vocabulary,
                     punctuationStyle: punctuationStyle
                 )
@@ -631,7 +641,7 @@ actor RemoteLLMPostProcessor {
             return LocalLLMPostprocessResult(text: finalText, timings: timings, metadata: metadata, debugInfo: debugInfo)
         } catch {
             let finalText = LocalLLMPostProcessor.fallbackCorrectionText(
-                for: rawText,
+                for: fallbackRawText,
                 vocabulary: promptConfiguration.vocabulary,
                 punctuationStyle: punctuationStyle
             )
@@ -639,7 +649,7 @@ actor RemoteLLMPostProcessor {
             metadata["outcome"] = "failed"
             metadata["error"] = error.localizedDescription
             metadata["output_chars"] = String(finalText.count)
-            metadata["deterministic_punctuation_applied"] = String(finalText != rawText)
+            metadata["deterministic_punctuation_applied"] = String(finalText != fallbackRawText)
             AppLog.error("Remote LLM postprocess failed; using deterministic fallback error=\(error.localizedDescription)")
             return LocalLLMPostprocessResult(text: finalText, timings: timings, metadata: metadata, debugInfo: debugInfo)
         }

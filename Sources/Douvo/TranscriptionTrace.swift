@@ -160,6 +160,8 @@ final class TranscriptionTrace {
 }
 
 enum TraceFileStore {
+    private static let maxTraceCount = 10
+
     static var directoryURL: URL {
         let directory = AppLog.directoryURL.appendingPathComponent("Traces", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -178,10 +180,37 @@ enum TraceFileStore {
         let fileURL = directoryURL.appendingPathComponent("\(timestamp())-\(prefix).json")
         do {
             try data.write(to: fileURL, options: .atomic)
+            pruneOldTraces()
             return fileURL
         } catch {
             AppLog.error("Trace file write failed path=\(fileURL.path) error=\(error.localizedDescription)")
             return nil
+        }
+    }
+
+    private static func pruneOldTraces() {
+        do {
+            let urls = try FileManager.default.contentsOfDirectory(
+                at: directoryURL,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            ).filter { $0.pathExtension.lowercased() == "json" }
+
+            let sorted = urls.sorted { lhs, rhs in
+                let lhsDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let rhsDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                if lhsDate == rhsDate {
+                    return lhs.lastPathComponent > rhs.lastPathComponent
+                }
+                return lhsDate > rhsDate
+            }
+
+            for url in sorted.dropFirst(maxTraceCount) {
+                try FileManager.default.removeItem(at: url)
+                AppLog.info("Trace file pruned path=\(url.path)")
+            }
+        } catch {
+            AppLog.error("Trace file prune failed error=\(error.localizedDescription)")
         }
     }
 

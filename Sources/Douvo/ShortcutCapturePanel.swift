@@ -20,6 +20,7 @@ final class ShortcutCapturePanel: NSObject, NSWindowDelegate {
         appVersion: String,
         microphoneDevices: [AudioInputDevice],
         selectedMicrophoneUID: String?,
+        selectedASRProvider: ASRProvider,
         onCapture: @escaping (HotkeyShortcutSlot, HotkeyShortcut) -> Bool,
         onCaptureStateChanged: @escaping (Bool) -> Void,
         onResetToggle: @escaping () -> Void,
@@ -27,6 +28,7 @@ final class ShortcutCapturePanel: NSObject, NSWindowDelegate {
         onResetHold: @escaping () -> Void,
         onClearHold: @escaping () -> Void,
         onSelectMicrophone: @escaping (String?) -> Void,
+        onSelectASRProvider: @escaping (ASRProvider) -> Void,
         onDownloadLocalLLMModel: @escaping (LocalLLMModel, @escaping @Sendable (Double) -> Void) async throws -> Void,
         onDeleteLocalLLMModel: @escaping (LocalLLMModel) async throws -> Void,
         onLogin: @escaping () -> Void,
@@ -54,7 +56,8 @@ final class ShortcutCapturePanel: NSObject, NSWindowDelegate {
             keyboardCaptureError: keyboardCaptureError,
             appVersion: appVersion,
             microphoneDevices: microphoneDevices,
-            selectedMicrophoneUID: selectedMicrophoneUID
+            selectedMicrophoneUID: selectedMicrophoneUID,
+            selectedASRProvider: selectedASRProvider
         )
         model.canCheckForUpdates = canCheckForUpdates
         self.model = model
@@ -73,6 +76,7 @@ final class ShortcutCapturePanel: NSObject, NSWindowDelegate {
             onResetHold: onResetHold,
             onClearHold: onClearHold,
             onSelectMicrophone: onSelectMicrophone,
+            onSelectASRProvider: onSelectASRProvider,
             onDownloadLocalLLMModel: onDownloadLocalLLMModel,
             onDeleteLocalLLMModel: onDeleteLocalLLMModel,
             onLogin: onLogin,
@@ -281,6 +285,7 @@ private final class SettingsPanelModel: ObservableObject {
     let appVersion: String
     let microphoneDevices: [AudioInputDevice]
     @Published var selectedMicrophoneUID: String?
+    @Published var selectedASRProvider: ASRProvider
     @Published var localPostProcessingEnabled = LocalLLMSettingsStore.postProcessingEnabled
     @Published var correctionBackend = CorrectionSettingsStore.backend
     @Published var selectedLocalLLMModel = LocalLLMSettingsStore.selectedModel
@@ -308,7 +313,8 @@ private final class SettingsPanelModel: ObservableObject {
         keyboardCaptureError: String?,
         appVersion: String,
         microphoneDevices: [AudioInputDevice],
-        selectedMicrophoneUID: String?
+        selectedMicrophoneUID: String?,
+        selectedASRProvider: ASRProvider
     ) {
         self.toggleShortcutName = toggleShortcutName
         self.holdShortcutName = holdShortcutName
@@ -320,10 +326,11 @@ private final class SettingsPanelModel: ObservableObject {
         self.appVersion = appVersion
         self.microphoneDevices = microphoneDevices
         self.selectedMicrophoneUID = selectedMicrophoneUID
+        self.selectedASRProvider = selectedASRProvider
     }
 
     var isLoggedIn: Bool {
-        loginStatus == .loggedIn
+        selectedASRProvider == .android || loginStatus == .loggedIn
     }
 
     var canEnableLocalPostProcessing: Bool {
@@ -484,6 +491,7 @@ private struct SettingsPanelView: View {
     let onResetHold: () -> Void
     let onClearHold: () -> Void
     let onSelectMicrophone: (String?) -> Void
+    let onSelectASRProvider: (ASRProvider) -> Void
     let onDownloadLocalLLMModel: (LocalLLMModel, @escaping @Sendable (Double) -> Void) async throws -> Void
     let onDeleteLocalLLMModel: (LocalLLMModel) async throws -> Void
     let onLogin: () -> Void
@@ -596,6 +604,8 @@ private struct SettingsPanelView: View {
 
     private var generalTab: some View {
         VStack(alignment: .leading, spacing: 10) {
+            settingsTitle("Shortcuts")
+
             settingsSection {
                 settingsListRow("Short Press") {
                     shortcutButtons(
@@ -653,6 +663,8 @@ private struct SettingsPanelView: View {
                     .foregroundColor(model.shortcutErrorMessage == nil ? .secondary : .red)
                     .padding(.horizontal, 14)
             }
+
+            settingsTitle("Input")
 
             settingsSection {
                 settingsListRow("Microphone") {
@@ -770,39 +782,101 @@ private struct SettingsPanelView: View {
         )
     }
 
-    private var accountTab: some View {
-        settingsSection {
-            settingsListRow("Status") {
-                statusText(model.isLoggedIn ? "Logged in" : "Not logged in", isHealthy: model.isLoggedIn)
+    private var asrProviderBinding: Binding<ASRProvider> {
+        Binding(
+            get: { model.selectedASRProvider },
+            set: { newValue in
+                model.selectedASRProvider = newValue
+                onSelectASRProvider(newValue)
             }
+        )
+    }
 
-            settingsDivider()
+    private var accountTab: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            settingsTitle("Doubao")
 
-            settingsListRow("Account") {
-                if model.isLoggedIn {
-                    HStack(spacing: 8) {
-                        Button("Refresh Credentials", action: onRepairLogin)
-                            .focusable(false)
+            settingsSection {
+                settingsListRow("ASR Provider") {
+                    Picker("", selection: asrProviderBinding) {
+                        ForEach(ASRProvider.allCases) { provider in
+                            Text(provider.displayName).tag(provider)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 220, alignment: .trailing)
+                    .focusable(false)
+                }
 
-                        Button("Log Out") {
-                            onLogout()
-                            model.loginStatus = .notLoggedIn
+                settingsDivider()
+
+                settingsListRow("Status") {
+                    switch model.selectedASRProvider {
+                    case .web:
+                        statusText(model.loginStatus == .loggedIn ? "Logged in" : "Not logged in", isHealthy: model.loginStatus == .loggedIn)
+                    case .android:
+                        statusText("Automatic", isHealthy: true)
+                    case .mix:
+                        statusText(model.loginStatus == .loggedIn ? "Web logged in + Android automatic" : "Web not logged in", isHealthy: model.loginStatus == .loggedIn)
+                    }
+                }
+
+                settingsDivider()
+
+                settingsListRow("Account") {
+                    if model.selectedASRProvider == .android {
+                        Button("Reset Android Credentials") {
+                            DoubaoAndroidCredentialStore.clear()
                         }
                         .focusable(false)
+                        .help("Clear cached Android IME credentials. They will be recreated on the next recording.")
+                    } else if model.selectedASRProvider == .mix {
+                        HStack(spacing: 8) {
+                            if model.loginStatus == .loggedIn {
+                                Button("Refresh Web", action: onRepairLogin)
+                                    .focusable(false)
+
+                                Button("Log Out") {
+                                    onLogout()
+                                    model.loginStatus = .notLoggedIn
+                                }
+                                .focusable(false)
+                            } else {
+                                Button("Log In", action: onLogin)
+                                    .focusable(false)
+                            }
+
+                            Button("Reset Android") {
+                                DoubaoAndroidCredentialStore.clear()
+                            }
+                            .focusable(false)
+                            .help("Clear cached Android IME credentials. They will be recreated on the next recording.")
+                        }
+                    } else if model.loginStatus == .loggedIn {
+                        HStack(spacing: 8) {
+                            Button("Refresh Credentials", action: onRepairLogin)
+                                .focusable(false)
+
+                            Button("Log Out") {
+                                onLogout()
+                                model.loginStatus = .notLoggedIn
+                            }
+                            .focusable(false)
+                        }
+                    } else {
+                        Button("Log In", action: onLogin)
+                            .focusable(false)
                     }
-                } else {
-                    Button("Log In", action: onLogin)
-                        .focusable(false)
                 }
-            }
 
-            settingsDivider()
+                settingsDivider()
 
-            settingsListRow("Debug") {
-                Button("Copy Login Debug Info", action: onCopyLoginDebugInfo)
-                    .focusable(false)
-                    .disabled(!model.isLoggedIn)
-                    .help("Copy redacted login state, cookie names, and local credential paths.")
+                settingsListRow("Debug") {
+                    Button("Copy Login Debug Info", action: onCopyLoginDebugInfo)
+                        .focusable(false)
+                        .disabled(model.selectedASRProvider.usesWebASR && model.loginStatus != .loggedIn)
+                        .help("Copy redacted login state, cookie names, and local credential paths.")
+                }
             }
         }
         .frame(width: Self.settingsGroupWidth, alignment: .topLeading)
@@ -811,7 +885,7 @@ private struct SettingsPanelView: View {
     private var advancedTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                settingsTitle("Formatting")
+                settingsTitle("Basic")
 
                 settingsSection {
                     correctionListRow("Punctuation", contentAlignment: .trailing) {
@@ -824,9 +898,15 @@ private struct SettingsPanelView: View {
                         .pickerStyle(.menu)
                         .frame(width: Self.correctionContentWidth, alignment: .trailing)
                     }
+
+                    settingsDivider()
+
+                    correctionListRow("Vocabularies", height: nil) {
+                        vocabularyChipEditor
+                    }
                 }
 
-                settingsTitle("AI Correction")
+                settingsTitle("AI")
 
                 settingsSection {
                     correctionListRow("Enable", contentAlignment: .trailing) {
@@ -857,12 +937,6 @@ private struct SettingsPanelView: View {
                         localModelList
                     } else {
                         remoteModelSettings
-                    }
-
-                    settingsDivider()
-
-                    correctionListRow("Vocabularies", height: nil) {
-                        vocabularyChipEditor
                     }
 
                     settingsDivider()
@@ -2147,6 +2221,11 @@ private struct SettingsPanelView: View {
     @ViewBuilder
     private func correctionDebugMenuItem(title: String, isSelected: Bool) -> some View {
         HStack(spacing: 6) {
+            Text(title)
+                .lineLimit(1)
+
+            Spacer(minLength: 16)
+
             Group {
                 if isSelected {
                     Image(systemName: "checkmark")
@@ -2155,8 +2234,6 @@ private struct SettingsPanelView: View {
                 }
             }
             .frame(width: 12, height: 12)
-
-            Text(title)
         }
     }
 
@@ -2214,6 +2291,8 @@ private struct SettingsPanelView: View {
     private var diagnoseTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
+                settingsTitle("System")
+
                 settingsSection {
                     settingsListRow("Accessibility", height: 44) {
                         statusText(model.isKeyboardCaptureActive ? "Active" : "Needs Permission", isHealthy: model.isKeyboardCaptureActive)
@@ -2258,22 +2337,20 @@ private struct SettingsPanelView: View {
                         .padding(.horizontal, 14)
                 }
 
+                HStack(spacing: 8) {
+                    settingsTitle("Debug Model")
+
+                    Spacer(minLength: 8)
+
+                    if isRunningCorrectionDebug {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(width: 16, height: 16)
+                    }
+                }
+
                 settingsSection {
                     VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 8) {
-                            Text("Correction Debug")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundColor(.primary)
-
-                            Spacer(minLength: 8)
-
-                            if isRunningCorrectionDebug {
-                                ProgressView()
-                                    .controlSize(.small)
-                                    .frame(width: 16, height: 16)
-                            }
-                        }
-
                         HStack(spacing: 8) {
                             Text("Backend")
                                 .font(.system(size: 11, weight: .semibold))
@@ -2290,7 +2367,7 @@ private struct SettingsPanelView: View {
                             Button("Show in Finder", action: locateCorrectionDebugTrace)
                                 .focusable(false)
                                 .disabled(correctionDebugTraceURL == nil)
-                                .help("Show the latest correction debug trace in Finder.")
+                                .help("Show the latest debug model trace in Finder.")
                         }
 
                         debugTextLabel("Input")
@@ -2578,17 +2655,18 @@ private struct SettingsPanelView: View {
     private func settingsListRow<Content: View>(
         _ title: String,
         height: CGFloat? = 48,
+        contentAlignment: Alignment = .trailing,
         @ViewBuilder trailing: () -> Content
     ) -> some View {
-        HStack(spacing: 16) {
+        HStack(spacing: 12) {
             Text(title)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(.primary)
                 .lineLimit(1)
-
-            Spacer(minLength: 12)
+                .frame(width: Self.settingsRowLabelWidth, alignment: .leading)
 
             trailing()
+                .frame(width: Self.settingsRowContentWidth, alignment: contentAlignment)
         }
         .padding(.horizontal, 14)
         .frame(height: height)
@@ -2651,6 +2729,8 @@ private struct SettingsPanelView: View {
     private static let settingsLabelWidth: CGFloat = 90
     private static let settingsContentWidth: CGFloat = 320
     private static let settingsGroupWidth: CGFloat = settingsLabelWidth + 12 + settingsContentWidth
+    private static let settingsRowLabelWidth: CGFloat = 112
+    private static let settingsRowContentWidth: CGFloat = settingsGroupWidth - 28 - 12 - settingsRowLabelWidth
     private static let correctionLabelWidth: CGFloat = 104
     private static let correctionContentWidth: CGFloat = settingsGroupWidth - 28 - 12 - correctionLabelWidth
     private static let localModelSingleAccessoryWidth: CGFloat = 28
