@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   release:
-    if: ${{ github.event_name == 'workflow_dispatch' || !startsWith(github.event.head_commit.message, 'chore') }}
+    if: ${{ github.repository == 'rhinoc/douvo' && (github.event_name == 'workflow_dispatch' || !startsWith(github.event.head_commit.message, 'chore')) }}
     concurrency:
       group: release-${{ github.repository }}
       cancel-in-progress: false

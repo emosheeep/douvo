@@ -49,7 +49,7 @@ final class AppState: ObservableObject {
 
         var nextLevels = Array(audioLevels.dropFirst())
         let currentLevel = audioLevels.last ?? 0
-        let coefficient: Float = voiceLevel > currentLevel ? 0.82 : 0.42
+        let coefficient: Float = voiceLevel > currentLevel ? 0.88 : 0.62
         let smoothedLevel = currentLevel + (voiceLevel - currentLevel) * coefficient
         nextLevels.append(smoothedLevel)
         audioLevels = nextLevels

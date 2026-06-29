@@ -420,6 +420,8 @@ private final class SettingsPanelModel: ObservableObject {
     @Published var selectedOverlaySize = OverlayAppearanceStore.size
     @Published var selectedWaveformStyle = OverlayAppearanceStore.waveformStyle
     @Published var overlayWaveformNoiseFloor = OverlayAppearanceStore.waveformNoiseFloor
+    @Published var overlayAnimationIntensity = OverlayAppearanceStore.animationIntensity
+    @Published var overlaySurfaceOpacity = OverlayAppearanceStore.surfaceOpacity
     @Published var localPostProcessingEnabled = LocalLLMSettingsStore.postProcessingEnabled
     @Published var correctionBackend = CorrectionSettingsStore.backend
     @Published var selectedLocalLLMModel = LocalLLMSettingsStore.selectedModel
@@ -934,6 +936,38 @@ private struct SettingsPanelView: View {
 
                     settingsDivider()
 
+                    settingsListRow(L10n.text(en: "Animation", zh: "动画强度")) {
+                        Picker("", selection: overlayAnimationIntensityBinding) {
+                            ForEach(OverlayAppearanceStore.AnimationIntensity.allCases) { intensity in
+                                Text(intensity.displayName).tag(intensity)
+                            }
+                        }
+                        .labelsHidden()
+                        .id(model.selectedLanguage)
+                        .pickerStyle(.segmented)
+                        .frame(width: 220, alignment: .trailing)
+                    }
+
+                    settingsDivider()
+
+                    settingsListRow(L10n.text(en: "Background Opacity", zh: "背景不透明度")) {
+                        HStack(spacing: 8) {
+                            Slider(
+                                value: overlaySurfaceOpacityBinding,
+                                in: OverlayAppearanceStore.surfaceOpacityRange,
+                                step: 0.05
+                            )
+                            .controlSize(.small)
+
+                            Text("\(Int((model.overlaySurfaceOpacity * 100).rounded()))%")
+                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                .foregroundColor(.secondary)
+                                .frame(width: 38, alignment: .trailing)
+                        }
+                    }
+
+                    settingsDivider()
+
                     settingsListRow(L10n.text(en: "Cancel Button", zh: "取消按钮")) {
                         Toggle("", isOn: overlayShowsCancelControlBinding)
                             .labelsHidden()
@@ -1171,6 +1205,26 @@ private struct SettingsPanelView: View {
             set: { newValue in
                 model.selectedWaveformStyle = newValue
                 OverlayAppearanceStore.waveformStyle = newValue
+            }
+        )
+    }
+
+    private var overlayAnimationIntensityBinding: Binding<OverlayAppearanceStore.AnimationIntensity> {
+        Binding(
+            get: { model.overlayAnimationIntensity },
+            set: { newValue in
+                model.overlayAnimationIntensity = newValue
+                OverlayAppearanceStore.animationIntensity = newValue
+            }
+        )
+    }
+
+    private var overlaySurfaceOpacityBinding: Binding<Double> {
+        Binding(
+            get: { model.overlaySurfaceOpacity },
+            set: { newValue in
+                model.overlaySurfaceOpacity = newValue
+                OverlayAppearanceStore.surfaceOpacity = newValue
             }
         )
     }

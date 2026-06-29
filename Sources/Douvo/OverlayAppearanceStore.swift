@@ -2,6 +2,33 @@ import Foundation
 import CoreGraphics
 
 enum OverlayAppearanceStore {
+    enum AnimationIntensity: String, CaseIterable, Identifiable {
+        case none
+        case reduced
+        case normal
+
+        var id: String { rawValue }
+
+        var displayName: String {
+            switch self {
+            case .none:
+                L10n.text(en: "None", zh: "无")
+            case .reduced:
+                L10n.text(en: "Reduced", zh: "降低")
+            case .normal:
+                L10n.text(en: "Normal", zh: "正常")
+            }
+        }
+
+        var allowsOpacityAnimation: Bool {
+            self != .none
+        }
+
+        var allowsMotionAnimation: Bool {
+            self == .normal
+        }
+    }
+
     enum WaveformStyle: String, CaseIterable, Identifiable {
         case capsules
         case dots
@@ -97,22 +124,22 @@ enum OverlayAppearanceStore {
         var waveformBarWidth: CGFloat {
             switch self {
             case .small:
-                2.4
+                1
             case .medium:
-                2.7
+                2
             case .large:
-                3
+                2
             }
         }
 
         var waveformBarCount: Int {
             switch self {
             case .small:
-                8
+                20
             case .medium:
-                10
+                20
             case .large:
-                12
+                24
             }
         }
     }
@@ -123,9 +150,13 @@ enum OverlayAppearanceStore {
     static let sizeKey = "overlaySize"
     static let waveformStyleKey = "overlayWaveformStyle"
     static let waveformNoiseFloorKey = "overlayWaveformNoiseFloor"
+    static let animationIntensityKey = "overlayAnimationIntensity"
+    static let surfaceOpacityKey = "overlaySurfaceOpacity"
 
     static let defaultWaveformNoiseFloor: Double = 0.2
     static let waveformNoiseFloorRange: ClosedRange<Double> = 0.05...0.45
+    static let defaultSurfaceOpacity: Double = 0.9
+    static let surfaceOpacityRange: ClosedRange<Double> = 0.35...0.9
 
     static var showsCancelControl: Bool {
         get {
@@ -188,6 +219,33 @@ enum OverlayAppearanceStore {
         }
         set {
             UserDefaults.standard.set(newValue.rawValue, forKey: waveformStyleKey)
+        }
+    }
+
+    static var animationIntensity: AnimationIntensity {
+        get {
+            guard let rawValue = UserDefaults.standard.string(forKey: animationIntensityKey),
+                  let intensity = AnimationIntensity(rawValue: rawValue) else {
+                return .normal
+            }
+            return intensity
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: animationIntensityKey)
+        }
+    }
+
+    static var surfaceOpacity: Double {
+        get {
+            guard UserDefaults.standard.object(forKey: surfaceOpacityKey) != nil else {
+                return defaultSurfaceOpacity
+            }
+            let value = UserDefaults.standard.double(forKey: surfaceOpacityKey)
+            return min(surfaceOpacityRange.upperBound, max(surfaceOpacityRange.lowerBound, value))
+        }
+        set {
+            let value = min(surfaceOpacityRange.upperBound, max(surfaceOpacityRange.lowerBound, newValue))
+            UserDefaults.standard.set(value, forKey: surfaceOpacityKey)
         }
     }
 

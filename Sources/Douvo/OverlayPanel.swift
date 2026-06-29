@@ -14,6 +14,10 @@ private enum OverlayAnimation {
     static let fadeInDuration: TimeInterval = 0.14
     static let fadeOutDuration: TimeInterval = 0.12
     static let contentFadeDuration: TimeInterval = 0.14
+    static let reducedFadeInDuration: TimeInterval = 0.06
+    static let reducedFadeOutDuration: TimeInterval = 0.05
+    static let reducedContentFadeDuration: TimeInterval = 0.06
+    static let surfaceSettleDuration: TimeInterval = 0.28
 }
 
 private enum OverlaySurfaceStyle {
@@ -29,6 +33,46 @@ private enum OverlaySurfaceStyle {
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )
+    }
+}
+
+private enum OverlaySurfacePhase: Equatable {
+    case loading
+    case expanded
+}
+
+private extension OverlayAppearanceStore.AnimationIntensity {
+    var panelFadeInDuration: TimeInterval {
+        switch self {
+        case .none:
+            0
+        case .reduced:
+            OverlayAnimation.reducedFadeInDuration
+        case .normal:
+            OverlayAnimation.fadeInDuration
+        }
+    }
+
+    var panelFadeOutDuration: TimeInterval {
+        switch self {
+        case .none:
+            0
+        case .reduced:
+            OverlayAnimation.reducedFadeOutDuration
+        case .normal:
+            OverlayAnimation.fadeOutDuration
+        }
+    }
+
+    var contentFadeDuration: TimeInterval? {
+        switch self {
+        case .none:
+            nil
+        case .reduced:
+            OverlayAnimation.reducedContentFadeDuration
+        case .normal:
+            OverlayAnimation.contentFadeDuration
+        }
     }
 }
 
@@ -89,7 +133,7 @@ final class OverlayPanel {
         }
         panel.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = OverlayAnimation.fadeInDuration
+            context.duration = animationIntensity.panelFadeInDuration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             panel.animator().alphaValue = 1
         }
@@ -107,7 +151,7 @@ final class OverlayPanel {
         }
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = OverlayAnimation.fadeOutDuration
+            context.duration = animationIntensity.panelFadeOutDuration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             panel.animator().alphaValue = 0
         } completionHandler: { [weak self, weak panel] in
@@ -129,7 +173,13 @@ final class OverlayPanel {
     }
 
     private var shouldAnimate: Bool {
-        !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        animationIntensity.allowsOpacityAnimation
+    }
+
+    private var animationIntensity: OverlayAppearanceStore.AnimationIntensity {
+        let selectedIntensity = OverlayAppearanceStore.animationIntensity
+        guard selectedIntensity != .none else { return .none }
+        return NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? .reduced : selectedIntensity
     }
 }
 
@@ -140,21 +190,46 @@ private struct OverlayView: View {
     @AppStorage(OverlayAppearanceStore.showBorderLightKey) private var showBorderLight = true
     @AppStorage(OverlayAppearanceStore.sizeKey) private var overlaySizeRawValue = OverlayAppearanceStore.Size.large.rawValue
     @AppStorage(OverlayAppearanceStore.waveformStyleKey) private var waveformStyleRawValue = OverlayAppearanceStore.WaveformStyle.capsules.rawValue
+    @AppStorage(OverlayAppearanceStore.animationIntensityKey) private var animationIntensityRawValue = OverlayAppearanceStore.AnimationIntensity.normal.rawValue
+    @AppStorage(OverlayAppearanceStore.surfaceOpacityKey) private var overlaySurfaceOpacity = OverlayAppearanceStore.defaultSurfaceOpacity
     @State private var showSpinner = false
     @State private var spinnerGeneration = 0
+    @State private var showPillContent = false
+    @State private var pillContentGeneration = 0
+    @State private var surfacePhase: OverlaySurfacePhase
+
+    init(appState: AppState) {
+        self.appState = appState
+        let usesCompactLoadingSurface = Self.usesCompactLoadingSurface(
+            for: appState.recordingState,
+            animationIntensity: Self.initialAnimationIntensity
+        )
+        _surfacePhase = State(initialValue: usesCompactLoadingSurface ? .loading : .expanded)
+        _showPillContent = State(initialValue: !usesCompactLoadingSurface)
+    }
 
     var body: some View {
         VStack(spacing: 8) {
             if isMessageOnly {
                 if let subtitle = subtitleText {
-                    SubtitleView(text: subtitle, maxWidth: subtitleMaxWidth)
+                    SubtitleView(
+                        text: subtitle,
+                        maxWidth: subtitleMaxWidth,
+                        backgroundOpacity: subtitleBackgroundOpacity,
+                        materialOpacity: overlayMaterialOpacity
+                    )
                         .frame(height: pillOuterHeight, alignment: .center)
                         .id("message-subtitle")
                         .transition(.opacity)
                 }
             } else {
                 if let subtitle = subtitleText {
-                    SubtitleView(text: subtitle, maxWidth: subtitleMaxWidth)
+                    SubtitleView(
+                        text: subtitle,
+                        maxWidth: subtitleMaxWidth,
+                        backgroundOpacity: subtitleBackgroundOpacity,
+                        materialOpacity: overlayMaterialOpacity
+                    )
                         .id("live-subtitle")
                         .transition(.opacity)
                 }
@@ -170,13 +245,23 @@ private struct OverlayView: View {
         .animation(contentFadeAnimation, value: hasSubtitle)
         .animation(contentFadeAnimation, value: isMessageOnly)
         .onAppear {
+            updateSurfacePhase(for: appState.recordingState)
             scheduleSpinnerVisibility(for: appState.recordingState)
         }
         .onChange(of: appState.recordingState) { _, newValue in
+            updateSurfacePhase(for: newValue)
             scheduleSpinnerVisibility(for: newValue)
+            schedulePillContentVisibility(isLoading: newValue == .starting || newValue == .stopping)
         }
         .onChange(of: overlaySizeRawValue) {
             appState.resetAudioLevels()
+        }
+        .onChange(of: animationIntensityRawValue) {
+            updateSurfacePhase(for: appState.recordingState)
+            scheduleSpinnerVisibility(for: appState.recordingState)
+            if !isLoading {
+                showPillContent = true
+            }
         }
     }
 
@@ -196,14 +281,22 @@ private struct OverlayView: View {
 
             Color.clear
                 .frame(width: overlaySurfaceWidth, height: overlaySurfaceHeight)
-                .overlaySurface(Capsule(), tint: overlayTint)
+                .overlaySurface(
+                    Capsule(),
+                    backgroundOpacity: overlayBackgroundOpacity,
+                    materialOpacity: overlayMaterialOpacity,
+                    tint: overlayTint
+                )
 
             Group {
-                if isLoading {
+                if isLoading, surfacePhase == .loading {
                     spinnerOrPlaceholder(accessibilityLabel: loadingAccessibilityLabel)
                         .frame(width: overlaySurfaceWidth, height: overlaySurfaceHeight)
                         .transition(.opacity)
-                } else {
+                } else if isLoading {
+                    expandedLoadingContent
+                        .transition(.opacity)
+                } else if showPillContent {
                     HStack(spacing: overlayControlGap) {
                         if showCancelControl {
                             Button(action: { appState.onCancelTapped?() }) {
@@ -222,24 +315,15 @@ private struct OverlayView: View {
                             isActive: appState.recordingState == .recording,
                             style: waveformStyle,
                             barWidth: overlaySize.waveformBarWidth,
-                            maxHeight: overlayWaveformHeight
+                            maxHeight: overlayWaveformHeight,
+                            animatesMotion: systemAllowsMotion
                         )
                             .frame(width: overlayWaveformWidth)
 
                         if showSubmitControl {
                             Button(action: { appState.onSubmitTapped?() }) {
                                 Group {
-                                    if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-                                        OverlayIconCircle(
-                                            systemName: submitButtonSystemName,
-                                            iconSize: submitButtonIconSize,
-                                            iconWeight: .bold,
-                                            isPrimary: true,
-                                            sheenAngle: .degrees(70),
-                                            diameter: overlayControlButtonSize,
-                                            tint: overlayTint
-                                        )
-                                    } else {
+                                    if allowsMotionAnimation {
                                         TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
                                             OverlayIconCircle(
                                                 systemName: submitButtonSystemName,
@@ -251,6 +335,16 @@ private struct OverlayView: View {
                                                 tint: overlayTint
                                             )
                                         }
+                                    } else {
+                                        OverlayIconCircle(
+                                            systemName: submitButtonSystemName,
+                                            iconSize: submitButtonIconSize,
+                                            iconWeight: .bold,
+                                            isPrimary: true,
+                                            sheenAngle: .degrees(70),
+                                            diameter: overlayControlButtonSize,
+                                            tint: overlayTint
+                                        )
                                     }
                                 }
                             }
@@ -261,17 +355,20 @@ private struct OverlayView: View {
                     .padding(.horizontal, overlayHorizontalPadding)
                     .frame(width: overlaySurfaceWidth, height: overlaySurfaceHeight)
                     .transition(.opacity)
+                } else {
+                    Color.clear
+                        .frame(width: overlaySurfaceWidth, height: overlaySurfaceHeight)
                 }
             }
 
             if showBorderLight {
                 Group {
-                    if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-                        BorderFlowLightView(angle: .degrees(70), tint: overlayTint)
-                    } else {
+                    if allowsBorderLightAnimation {
                         TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
                             BorderFlowLightView(angle: borderLightAngle(at: timeline.date), tint: overlayTint)
                         }
+                    } else {
+                        BorderFlowLightView(angle: .degrees(70), tint: overlayTint)
                     }
                 }
                 .frame(width: overlaySurfaceWidth, height: overlaySurfaceHeight)
@@ -288,6 +385,34 @@ private struct OverlayView: View {
         .animation(surfaceAnimation, value: showCancelControl)
         .animation(surfaceAnimation, value: showSubmitControl)
         .animation(surfaceAnimation, value: appState.overlayMode)
+        .animation(surfaceAnimation, value: surfacePhase)
+        .animation(contentFadeAnimation, value: overlaySurfaceOpacity)
+    }
+
+    private var expandedLoadingContent: some View {
+        HStack(spacing: overlayControlGap) {
+            if showCancelControl {
+                Color.clear
+                    .frame(width: overlayControlButtonSize, height: overlayControlButtonSize)
+            }
+
+            WaveformView(
+                levels: silentWaveformLevels,
+                isActive: false,
+                style: waveformStyle,
+                barWidth: overlaySize.waveformBarWidth,
+                maxHeight: overlayWaveformHeight,
+                animatesMotion: systemAllowsMotion
+            )
+                .frame(width: overlayWaveformWidth)
+
+            if showSubmitControl {
+                spinnerOrPlaceholder(accessibilityLabel: loadingAccessibilityLabel)
+                    .frame(width: overlayControlButtonSize, height: overlayControlButtonSize)
+            }
+        }
+        .padding(.horizontal, overlayHorizontalPadding)
+        .frame(width: overlaySurfaceWidth, height: overlaySurfaceHeight)
     }
 
     @ViewBuilder
@@ -296,7 +421,8 @@ private struct OverlayView: View {
             ProcessingIndicatorView(
                 accessibilityLabel: accessibilityLabel,
                 showsLightEffect: showBorderLight,
-                tint: overlayTint
+                tint: overlayTint,
+                animatesMotion: systemAllowsMotion
             )
                 .frame(width: 20, height: 20)
                 .transition(.opacity)
@@ -318,6 +444,66 @@ private struct OverlayView: View {
         OverlayAppearanceStore.WaveformStyle(rawValue: waveformStyleRawValue) ?? .capsules
     }
 
+    private var selectedAnimationIntensity: OverlayAppearanceStore.AnimationIntensity {
+        OverlayAppearanceStore.AnimationIntensity(rawValue: animationIntensityRawValue) ?? .normal
+    }
+
+    private var animationIntensity: OverlayAppearanceStore.AnimationIntensity {
+        guard selectedAnimationIntensity != .none else { return .none }
+        return NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? .reduced : selectedAnimationIntensity
+    }
+
+    private static var initialAnimationIntensity: OverlayAppearanceStore.AnimationIntensity {
+        let selectedIntensity = OverlayAppearanceStore.animationIntensity
+        guard selectedIntensity != .none else { return .none }
+        return NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? .reduced : selectedIntensity
+    }
+
+    private var allowsOpacityAnimation: Bool {
+        animationIntensity.allowsOpacityAnimation
+    }
+
+    private var allowsMotionAnimation: Bool {
+        animationIntensity.allowsMotionAnimation
+    }
+
+    private var allowsBorderLightAnimation: Bool {
+        selectedAnimationIntensity != .none && systemAllowsMotion
+    }
+
+    private var systemAllowsMotion: Bool {
+        !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
+
+    private func usesCompactLoadingSurface(for state: RecordingState) -> Bool {
+        Self.usesCompactLoadingSurface(for: state, animationIntensity: animationIntensity)
+    }
+
+    private static func usesCompactLoadingSurface(
+        for state: RecordingState,
+        animationIntensity: OverlayAppearanceStore.AnimationIntensity
+    ) -> Bool {
+        (state == .starting || state == .stopping) && animationIntensity.allowsMotionAnimation
+    }
+
+    private var overlayBackgroundOpacity: Double {
+        min(
+            OverlayAppearanceStore.surfaceOpacityRange.upperBound,
+            max(OverlayAppearanceStore.surfaceOpacityRange.lowerBound, overlaySurfaceOpacity)
+        )
+    }
+
+    private var subtitleBackgroundOpacity: Double {
+        overlayBackgroundOpacity * (0.6 / OverlayAppearanceStore.defaultSurfaceOpacity)
+    }
+
+    private var overlayMaterialOpacity: Double {
+        let lowerBound = OverlayAppearanceStore.surfaceOpacityRange.lowerBound
+        let upperBound = OverlayAppearanceStore.defaultSurfaceOpacity
+        guard upperBound > lowerBound else { return 1 }
+        return min(1, max(0, (overlayBackgroundOpacity - lowerBound) / (upperBound - lowerBound)))
+    }
+
     private var overlayWaveformWidth: CGFloat {
         overlayPillWidth
     }
@@ -331,8 +517,12 @@ private struct OverlayView: View {
         }
     }
 
+    private var silentWaveformLevels: [Float] {
+        Array(repeating: 0, count: max(appState.audioLevels.count, overlaySize.waveformBarCount))
+    }
+
     private var overlaySurfaceWidth: CGFloat {
-        isLoading
+        surfacePhase == .loading
             ? overlaySurfaceHeight
             : overlayWaveformWidth + overlayHorizontalPadding * 2 + overlayControlsWidth
     }
@@ -432,15 +622,57 @@ private struct OverlayView: View {
         }
 
         showSpinner = false
-        let delay = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : OverlayAnimation.fadeInDuration
+        let delay = allowsMotionAnimation ? OverlayAnimation.fadeInDuration : 0
         Task { @MainActor in
             if delay > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
             guard spinnerGeneration == generation else { return }
             guard appState.recordingState == state else { return }
-            withAnimation(.easeInOut(duration: 0.08)) {
+            withAnimation(spinnerAppearanceAnimation) {
                 showSpinner = true
+            }
+        }
+    }
+
+    private func updateSurfacePhase(for state: RecordingState) {
+        if usesCompactLoadingSurface(for: state) {
+            surfacePhase = .loading
+            showPillContent = false
+        } else if state == .idle, surfacePhase == .loading, appState.errorMessage?.isEmpty != false {
+            showPillContent = false
+        } else {
+            surfacePhase = .expanded
+            if state == .starting || state == .stopping {
+                showPillContent = false
+            }
+        }
+    }
+
+    private func schedulePillContentVisibility(isLoading: Bool) {
+        pillContentGeneration += 1
+        let generation = pillContentGeneration
+
+        guard !isLoading else {
+            showPillContent = false
+            return
+        }
+
+        let delay = allowsMotionAnimation ? OverlayAnimation.surfaceSettleDuration : 0
+        guard delay > 0 else {
+            withAnimation(contentFadeAnimation) {
+                showPillContent = true
+            }
+            return
+        }
+
+        showPillContent = false
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard pillContentGeneration == generation else { return }
+            guard !self.isLoading else { return }
+            withAnimation(contentFadeAnimation) {
+                showPillContent = true
             }
         }
     }
@@ -462,15 +694,19 @@ private struct OverlayView: View {
     }
 
     private var contentFadeAnimation: Animation? {
-        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-            ? nil
-            : .easeInOut(duration: OverlayAnimation.contentFadeDuration)
+        guard let duration = animationIntensity.contentFadeDuration else { return nil }
+        return .easeInOut(duration: duration)
     }
 
     private var surfaceAnimation: Animation? {
-        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-            ? nil
-            : .spring(response: 0.28, dampingFraction: 0.86)
+        allowsMotionAnimation
+            ? .spring(response: 0.28, dampingFraction: 0.86)
+            : nil
+    }
+
+    private var spinnerAppearanceAnimation: Animation? {
+        guard let duration = animationIntensity.contentFadeDuration else { return nil }
+        return .easeInOut(duration: min(0.08, duration))
     }
 }
 
@@ -600,6 +836,7 @@ private struct ProcessingIndicatorView: View {
     let accessibilityLabel: String
     let showsLightEffect: Bool
     let tint: Color
+    let animatesMotion: Bool
     @State private var rotation: Double = 0
     @State private var pulse = false
 
@@ -620,14 +857,22 @@ private struct ProcessingIndicatorView: View {
         }
         .accessibilityLabel(accessibilityLabel)
         .onAppear {
-            rotation = 0
-            pulse = false
-            withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) {
-                rotation = 360
-            }
-            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
-                pulse = true
-            }
+            updateAnimation()
+        }
+        .onChange(of: animatesMotion) {
+            updateAnimation()
+        }
+    }
+
+    private func updateAnimation() {
+        rotation = 0
+        pulse = false
+        guard animatesMotion else { return }
+        withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) {
+            rotation = 360
+        }
+        withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+            pulse = true
         }
     }
 
@@ -653,6 +898,8 @@ private struct ProcessingIndicatorView: View {
 private struct SubtitleView: View {
     let text: String
     let maxWidth: CGFloat
+    let backgroundOpacity: Double
+    let materialOpacity: Double
 
     var body: some View {
         // Single line: head truncation keeps the newest tail visible while older
@@ -664,7 +911,11 @@ private struct SubtitleView: View {
             .truncationMode(.head)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .overlaySurface(RoundedRectangle(cornerRadius: 10, style: .continuous), backgroundOpacity: 0.6)
+            .overlaySurface(
+                RoundedRectangle(cornerRadius: 10, style: .continuous),
+                backgroundOpacity: backgroundOpacity,
+                materialOpacity: materialOpacity
+            )
             .frame(maxWidth: maxWidth)
             .transition(.opacity)
     }
@@ -673,13 +924,17 @@ private struct SubtitleView: View {
 private struct OverlaySurfaceModifier<SurfaceShape: InsettableShape>: ViewModifier {
     let shape: SurfaceShape
     let backgroundOpacity: Double
+    let materialOpacity: Double
     let tint: Color
 
     func body(content: Content) -> some View {
         content
             .background {
-                shape
-                    .fill(.ultraThinMaterial, style: FillStyle(antialiased: true))
+                if materialOpacity > 0.001 {
+                    shape
+                        .fill(.ultraThinMaterial, style: FillStyle(antialiased: true))
+                        .opacity(materialOpacity)
+                }
 
                 shape
                     .fill(Color.black.opacity(backgroundOpacity), style: FillStyle(antialiased: true))
@@ -702,9 +957,15 @@ private extension View {
     func overlaySurface<SurfaceShape: InsettableShape>(
         _ shape: SurfaceShape,
         backgroundOpacity: Double = OverlaySurfaceStyle.backgroundOpacity,
+        materialOpacity: Double = 1,
         tint: Color = Color.cyan
     ) -> some View {
-        modifier(OverlaySurfaceModifier(shape: shape, backgroundOpacity: backgroundOpacity, tint: tint))
+        modifier(OverlaySurfaceModifier(
+            shape: shape,
+            backgroundOpacity: backgroundOpacity,
+            materialOpacity: materialOpacity,
+            tint: tint
+        ))
     }
 }
 
@@ -714,6 +975,7 @@ private struct WaveformView: View {
     let style: OverlayAppearanceStore.WaveformStyle
     let barWidth: CGFloat
     let maxHeight: CGFloat
+    let animatesMotion: Bool
 
     var body: some View {
         let samples = WaveformSamples(levels: levels, isActive: isActive)
@@ -724,36 +986,43 @@ private struct WaveformView: View {
             case .dots:
                 dotMatrix(in: geo.size, samples: samples)
             case .ribbon:
-                if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-                    ios9Wave(in: geo.size, samples: samples, phase: 0)
-                } else {
+                if animatesMotion {
                     TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
                         let phase = CGFloat(timeline.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 12))
                         ios9Wave(in: geo.size, samples: samples, phase: phase)
                     }
+                } else {
+                    ios9Wave(in: geo.size, samples: samples, phase: 0)
                 }
             }
         }
         .frame(height: maxHeight)
         .mask(waveformEdgeFade)
-        .animation(.linear(duration: 0.025), value: levels)
+        .animation(animatesMotion ? .linear(duration: 0.025) : nil, value: levels)
     }
 
     private func dynamicSpacing(for width: CGFloat, itemWidth: CGFloat, sampleCount: Int) -> CGFloat {
-        let count = max(sampleCount, 1)
-        let availableSpacing = count > 1
-            ? (width - itemWidth * CGFloat(count)) / CGFloat(count - 1)
-            : 0
-        return max(2, min(5, availableSpacing))
+        2
     }
 
     private func capsuleBars(in size: CGSize, samples: WaveformSamples) -> some View {
         let spacing = dynamicSpacing(for: size.width, itemWidth: barWidth, sampleCount: samples.count)
         return HStack(alignment: .center, spacing: spacing) {
             ForEach(Array(samples.levels.enumerated()), id: \.offset) { _, level in
+                let activity = visualActivity(for: level)
+                let opacity = WaveformResponse.inactivePrimaryOpacity
+                    + (WaveformResponse.activePrimaryOpacity - WaveformResponse.inactivePrimaryOpacity) * Double(activity)
                 Capsule()
-                    .fill(Color.white.opacity(samples.hasSound ? 0.96 : 0.42))
-                    .frame(width: barWidth, height: barHeight(for: level, in: size.height, samples: samples))
+                    .fill(Color.white.opacity(opacity))
+                    .frame(
+                        width: barWidth,
+                        height: WaveformResponse.barHeight(
+                            for: level,
+                            in: size.height,
+                            minimumHeight: barWidth,
+                            activity: activity
+                        )
+                    )
             }
         }
         .frame(width: size.width, height: size.height, alignment: .center)
@@ -763,7 +1032,7 @@ private struct WaveformView: View {
         let dotRows = 7
         let verticalGap = min(1.25, max(0.8, size.height / 22))
         let dotSize = max(1.5, min(2.4, (size.height - verticalGap * CGFloat(dotRows - 1)) / CGFloat(dotRows)))
-        let columnCount = dotColumnCount(for: samples)
+        let columnCount = dotColumnCount(width: size.width, dotSize: dotSize, samples: samples)
         let horizontalGap = dotHorizontalGap(width: size.width, dotSize: dotSize, columnCount: columnCount)
         return HStack(alignment: .center, spacing: horizontalGap) {
             ForEach(0..<columnCount, id: \.self) { column in
@@ -781,8 +1050,11 @@ private struct WaveformView: View {
         .frame(width: size.width, height: size.height, alignment: .center)
     }
 
-    private func dotColumnCount(for samples: WaveformSamples) -> Int {
-        max(1, Int((CGFloat(samples.count) * 1.5).rounded()))
+    private func dotColumnCount(width: CGFloat, dotSize: CGFloat, samples: WaveformSamples) -> Int {
+        let minimumGap: CGFloat = 0.9
+        let capacity = max(1, Int(((width + minimumGap) / (dotSize + minimumGap)).rounded(.down)))
+        let desired = max(1, Int((CGFloat(samples.count) * 1.35).rounded()))
+        return min(capacity, desired)
     }
 
     private func dotHorizontalGap(width: CGFloat, dotSize: CGFloat, columnCount: Int) -> CGFloat {
@@ -821,37 +1093,46 @@ private struct WaveformView: View {
         .compositingGroup()
     }
 
-    private func barHeight(for level: CGFloat, in maxHeight: CGFloat, samples: WaveformSamples) -> CGFloat {
-        guard samples.hasSound else { return barWidth }
-        let eased = pow(level, 0.78)
-        return barWidth + eased * (maxHeight - barWidth)
-    }
-
-    private func dotOpacity(row: Int, rowCount: Int, level: CGFloat, samples: WaveformSamples) -> Double {
+    private func dotOpacity(row: Int, rowCount: Int, level: CGFloat, samples _: WaveformSamples) -> Double {
         let midpoint = CGFloat(rowCount - 1) / 2
         let distance = abs(CGFloat(row) - midpoint) / max(midpoint, 1)
         let isCenterRow = row == Int(midpoint.rounded())
-
-        guard samples.hasSound else {
-            return isCenterRow ? 0.48 : 0
-        }
+        let inactiveOpacity: CGFloat = isCenterRow ? WaveformResponse.inactiveDotCenterOpacity : 0
+        let activity = smoothstep(
+            edge0: WaveformResponse.soundThreshold,
+            edge1: WaveformResponse.residualActivityThreshold,
+            x: level
+        )
+        guard activity > 0.001 else { return Double(inactiveOpacity) }
 
         let band = 0.08 + pow(level, 0.70) * 0.92
         let edgeWidth: CGFloat = 0.18
         let coverage = 1 - smoothstep(edge0: band, edge1: band + edgeWidth, x: distance)
-        let baseline = isCenterRow ? 0.62 : 0
+        let baseline = isCenterRow ? WaveformResponse.activeDotCenterBaselineOpacity : 0
         guard coverage > 0.001 else {
-            return baseline
+            return Double(inactiveOpacity + (baseline - inactiveOpacity) * activity)
         }
 
         let rowFalloff = 1 - distance * 0.28
-        return Double(max(baseline, min(0.98, 0.36 + coverage * rowFalloff * 0.62)))
+        let activeOpacity = max(baseline, min(
+            WaveformResponse.maximumDotOpacity,
+            WaveformResponse.dotCoverageBaseOpacity + coverage * rowFalloff * WaveformResponse.dotCoverageOpacityScale
+        ))
+        return Double(inactiveOpacity + (activeOpacity - inactiveOpacity) * activity)
     }
 
     private func smoothstep(edge0: CGFloat, edge1: CGFloat, x: CGFloat) -> CGFloat {
         guard edge0 != edge1 else { return x < edge0 ? 0 : 1 }
         let t = max(0, min(1, (x - edge0) / (edge1 - edge0)))
         return t * t * (3 - 2 * t)
+    }
+
+    private func visualActivity(for level: CGFloat) -> CGFloat {
+        smoothstep(
+            edge0: WaveformResponse.soundThreshold,
+            edge1: WaveformResponse.residualActivityThreshold,
+            x: level
+        )
     }
 
     private func ios9SupportLineFill(samples: WaveformSamples) -> LinearGradient {
@@ -884,26 +1165,91 @@ private struct WaveformView: View {
     }
 }
 
+private enum WaveformResponse {
+    static let recentSampleCount = 5
+    static let soundThreshold: CGFloat = 0.001
+    static let activePrimaryOpacity = 0.96
+    static let inactivePrimaryOpacity = 0.42
+
+    static let inactiveDotCenterOpacity = 0.30
+    static let activeDotCenterBaselineOpacity = 0.42
+    static let residualActivityThreshold: CGFloat = 0.08
+    static let dotCoverageBaseOpacity = 0.36
+    static let dotCoverageOpacityScale = 0.62
+    static let maximumDotOpacity = 0.98
+
+    static let inactiveRibbonAmplitude: CGFloat = 0.05
+    static let activeRibbonMinimumAmplitude: CGFloat = 0.12
+    static let ribbonAmplitudeScale: CGFloat = 1.22
+    static let globalRecentPeakWeight: CGFloat = 0.70
+    static let globalCurrentWeight: CGFloat = 0.28
+    static let globalRecentAverageWeight: CGFloat = 0.20
+
+    static func hasSound(isActive: Bool, recentPeak: CGFloat) -> Bool {
+        isActive && recentPeak > soundThreshold
+    }
+
+    static func recentLevels(from levels: [CGFloat]) -> ArraySlice<CGFloat> {
+        levels.suffix(min(recentSampleCount, levels.count))
+    }
+
+    static func globalLevel(recentPeak: CGFloat, current: CGFloat, recentAverage: CGFloat) -> CGFloat {
+        min(
+            1,
+            recentPeak * globalRecentPeakWeight
+                + current * globalCurrentWeight
+                + recentAverage * globalRecentAverageWeight
+        )
+    }
+
+    static func barHeight(
+        for level: CGFloat,
+        in maxHeight: CGFloat,
+        minimumHeight: CGFloat,
+        activity: CGFloat
+    ) -> CGFloat {
+        let eased = pow(level, 0.78)
+        let activeHeight = minimumHeight + eased * (maxHeight - minimumHeight)
+        return minimumHeight + (activeHeight - minimumHeight) * activity
+    }
+
+    static func ribbonAmplitude(globalLevel: CGFloat, hasSound: Bool) -> CGFloat {
+        guard hasSound else { return inactiveRibbonAmplitude }
+        return max(activeRibbonMinimumAmplitude, pow(globalLevel, 0.58) * ribbonAmplitudeScale)
+    }
+}
+
 private struct WaveformSamples {
     let levels: [CGFloat]
     let hasSound: Bool
     let peak: CGFloat
     let average: CGFloat
+    let current: CGFloat
+    let recentPeak: CGFloat
+    let recentAverage: CGFloat
 
     var count: Int {
         levels.count
     }
 
     var globalLevel: CGFloat {
-        min(1, peak * 0.98 + average * 0.62)
+        WaveformResponse.globalLevel(
+            recentPeak: recentPeak,
+            current: current,
+            recentAverage: recentAverage
+        )
     }
 
     init(levels: [Float], isActive: Bool) {
         let clampedLevels = levels.map { CGFloat(max(0, min(1, $0))) }
+        let recentLevels = WaveformResponse.recentLevels(from: clampedLevels)
         self.levels = clampedLevels
         self.peak = clampedLevels.max() ?? 0
         self.average = clampedLevels.reduce(0, +) / CGFloat(max(clampedLevels.count, 1))
-        self.hasSound = isActive && peak > 0.001
+        self.current = clampedLevels.last ?? 0
+        self.recentPeak = recentLevels.max() ?? 0
+        self.recentAverage = recentLevels.reduce(0, +) / CGFloat(max(recentLevels.count, 1))
+        self.hasSound = WaveformResponse.hasSound(isActive: isActive, recentPeak: recentPeak)
     }
 
     func level(at column: Int, count columnCount: Int) -> CGFloat {
@@ -1003,7 +1349,7 @@ private struct IOS9WaveFillShape: Shape {
     }
 
     private func yPosition(i: CGFloat, progress: CGFloat, maxHeight: CGFloat) -> CGFloat {
-        let visualAmplitude = samples.hasSound ? max(0.22, pow(samples.globalLevel, 0.58) * 1.22) : 0.08
+        let visualAmplitude = WaveformResponse.ribbonAmplitude(globalLevel: samples.globalLevel, hasSound: samples.hasSound)
         let y = amplitudeFactor
             * maxHeight
             * visualAmplitude
