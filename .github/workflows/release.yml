@@ -20,6 +20,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .build/checkouts
+            .build/repositories
+          key: spm-${{ runner.os }}-${{ hashFiles('**/Package.resolved') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
       - name: Sync Sparkle SUFeedURL with this repo
         run: |
           FEED="https://raw.githubusercontent.com/${{ github.repository }}/main/appcast.xml"
